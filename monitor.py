@@ -28,6 +28,10 @@ KEYWORDS = [
     "агент", "agent", "workflow",
 ]
 
+# High-value keywords bump the score by 2; others by 1
+HIGH_VALUE = {"chatgpt", "claude", "gpt", "llm", "gemini", "midjourney",
+              "no-code", "nocode", "нейросеть", "нейросети", "автоматизация", "agent"}
+
 console = Console()
 
 
@@ -73,20 +77,43 @@ def filter_by_keywords(articles: list[dict]) -> list[dict]:
     return result
 
 
-def analyze_with_claude(articles: list[dict]) -> str:
-    """Ask Claude to rate and summarize each article for a CM audience."""
+def score_article(article: dict) -> int:
+    """Score 1–5 based on keyword frequency; used as fallback without API key."""
+    text = (article["title"] + " " + article["summary"]).lower()
+    score = 0
+    for kw in KEYWORDS:
+        if kw.lower() in text:
+            score += 2 if kw.lower() in HIGH_VALUE else 1
+    return min(5, max(1, score))
+
+
+def smart_summary(title: str) -> str:
+    """Return first 85 chars of title as a short description."""
+    return title[:85]
+
+
+def analyze_local(articles: list[dict]) -> str:
+    """Keyword-based scoring — works without an API key."""
+    lines = []
+    for i, a in enumerate(articles, 1):
+        stars = score_article(a)
+        lines.append(f"[{i}] {'⭐' * stars} {stars}/5 | О чём: {smart_summary(a['title'])}")
+    return "\n".join(lines)
+
+
+def analyze_with_claude(articles: list[dict]) -> tuple[str, bool]:
+    """Ask Claude to rate articles. Falls back to local scoring if no API key."""
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
-        return "[yellow]ANTHROPIC_API_KEY не найден — анализ Claude пропущен[/yellow]"
+        return analyze_local(articles), False
 
-    client = anthropic.Anthropic(api_key=api_key)
-
-    numbered = "\n\n".join(
-        f"[{i+1}] {a['source']}: {a['title']}\n{a['summary']}"
-        for i, a in enumerate(articles)
-    )
-
-    prompt = f"""Ты — ассистент контент-менеджера Telegram-канала об ИИ и no-code.
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        numbered = "\n\n".join(
+            f"[{i+1}] {a['source']}: {a['title']}\n{a['summary']}"
+            for i, a in enumerate(articles)
+        )
+        prompt = f"""Ты — ассистент контент-менеджера Telegram-канала об ИИ и no-code.
 
 Оцени статьи по релевантности для аудитории, которой интересны:
 — новые ИИ-инструменты и нейросети
@@ -98,16 +125,18 @@ def analyze_with_claude(articles: list[dict]) -> str:
 
 Статьи:
 {numbered}"""
+        message = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1024,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return message.content[0].text, True
+    except Exception as e:
+        console.print(f"[yellow]Claude недоступен ({e}), использую локальную оценку[/yellow]")
+        return analyze_local(articles), False
 
-    message = client.messages.create(
-        model="claude-haiku-4-5-20251001",
-        max_tokens=1024,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return message.content[0].text
 
-
-def print_digest(articles: list[dict], analysis: str) -> None:
+def print_digest(articles: list[dict], analysis: str, used_claude: bool) -> None:
     """Print the final digest to the terminal."""
     date_str = datetime.now().strftime("%d.%m.%Y")
     console.print()
@@ -117,7 +146,9 @@ def print_digest(articles: list[dict], analysis: str) -> None:
         expand=False,
     ))
 
-    console.print("\n[bold yellow]Оценка релевантности (Claude):[/bold yellow]")
+    label = "[bold yellow]Оценка релевантности (Claude AI):[/bold yellow]" if used_claude \
+        else "[bold yellow]Оценка релевантности (авто-скоринг по ключевым словам):[/bold yellow]"
+    console.print(f"\n{label}")
     console.print(analysis)
 
     console.print("\n[bold yellow]Ссылки на статьи:[/bold yellow]")
@@ -153,10 +184,10 @@ def main() -> None:
         console.print("Попробуй увеличить период: [cyan]python3 monitor.py 72[/cyan]")
         return
 
-    console.print("\n[bold]3. Анализирую с помощью Claude...[/bold]")
-    analysis = analyze_with_claude(relevant[:10])
+    console.print("\n[bold]3. Анализирую статьи...[/bold]")
+    analysis, used_claude = analyze_with_claude(relevant[:10])
 
-    print_digest(relevant[:10], analysis)
+    print_digest(relevant[:10], analysis, used_claude)
 
     console.print(
         f"\n[dim]Готово. Обработано {min(len(relevant), 10)} из {len(relevant)} релевантных статей.[/dim]"
