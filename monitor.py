@@ -4,7 +4,7 @@
 import os
 import sys
 import feedparser
-import anthropic
+from google import genai
 from datetime import datetime, timedelta, timezone
 from rich.console import Console
 from rich.panel import Panel
@@ -93,7 +93,7 @@ def smart_summary(title: str) -> str:
 
 
 def analyze_local(articles: list[dict]) -> str:
-    """Keyword-based scoring — works without an API key."""
+    """Keyword-based scoring — instant fallback, no network needed."""
     lines = []
     for i, a in enumerate(articles, 1):
         stars = score_article(a)
@@ -101,19 +101,18 @@ def analyze_local(articles: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def analyze_with_claude(articles: list[dict]) -> tuple[str, bool]:
-    """Ask Claude to rate articles. Falls back to local scoring if no API key."""
-    api_key = os.getenv("ANTHROPIC_API_KEY")
+def analyze_with_ai(articles: list[dict]) -> tuple[str, bool]:
+    """Rate articles using free Google Gemini API; falls back to keyword scoring."""
+    api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
+        console.print("[dim]Подсказка: добавь GEMINI_API_KEY в .env для AI-анализа (бесплатно на aistudio.google.com)[/dim]")
         return analyze_local(articles), False
 
-    try:
-        client = anthropic.Anthropic(api_key=api_key)
-        numbered = "\n\n".join(
-            f"[{i+1}] {a['source']}: {a['title']}\n{a['summary']}"
-            for i, a in enumerate(articles)
-        )
-        prompt = f"""Ты — ассистент контент-менеджера Telegram-канала об ИИ и no-code.
+    numbered = "\n\n".join(
+        f"[{i+1}] {a['source']}: {a['title']}\n{a['summary']}"
+        for i, a in enumerate(articles)
+    )
+    prompt = f"""Ты — ассистент контент-менеджера Telegram-канала об ИИ и no-code.
 
 Оцени статьи по релевантности для аудитории, которой интересны:
 — новые ИИ-инструменты и нейросети
@@ -125,14 +124,16 @@ def analyze_with_claude(articles: list[dict]) -> tuple[str, bool]:
 
 Статьи:
 {numbered}"""
-        message = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=1024,
-            messages=[{"role": "user", "content": prompt}],
+
+    try:
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt,
         )
-        return message.content[0].text, True
+        return response.text, True
     except Exception as e:
-        console.print(f"[yellow]Claude недоступен ({e}), использую локальную оценку[/yellow]")
+        console.print(f"[yellow]Gemini недоступен ({e}), использую авто-скоринг[/yellow]")
         return analyze_local(articles), False
 
 
@@ -146,7 +147,7 @@ def print_digest(articles: list[dict], analysis: str, used_claude: bool) -> None
         expand=False,
     ))
 
-    label = "[bold yellow]Оценка релевантности (Claude AI):[/bold yellow]" if used_claude \
+    label = "[bold yellow]Оценка релевантности (Gemini AI — бесплатно):[/bold yellow]" if used_claude \
         else "[bold yellow]Оценка релевантности (авто-скоринг по ключевым словам):[/bold yellow]"
     console.print(f"\n{label}")
     console.print(analysis)
@@ -184,8 +185,8 @@ def main() -> None:
         console.print("Попробуй увеличить период: [cyan]python3 monitor.py 72[/cyan]")
         return
 
-    console.print("\n[bold]3. Анализирую статьи...[/bold]")
-    analysis, used_claude = analyze_with_claude(relevant[:10])
+    console.print("\n[bold]3. Анализирую статьи с помощью AI...[/bold]")
+    analysis, used_claude = analyze_with_ai(relevant[:10])
 
     print_digest(relevant[:10], analysis, used_claude)
 
