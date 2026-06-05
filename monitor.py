@@ -169,7 +169,7 @@ def format_telegram_message(articles: list[dict], hours: int) -> str:
             stars = "⭐" * a["score"]
             verdict = a.get("verdict", a["title"])
             lines.append(f"{stars} <b>{verdict}</b>")
-            lines.append(f'<a href="{a["url"]}">Читать →</a>\n')
+            lines.append(f'<i>{a["source"]}</i> · <a href="{a["url"]}">Читать →</a>\n')
 
     lines.append(f"<i>Всего найдено релевантных: {len(articles)}</i>")
     return "\n".join(lines)
