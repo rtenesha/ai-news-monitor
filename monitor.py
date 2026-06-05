@@ -87,7 +87,7 @@ def analyze_local(articles: list[dict]) -> list[dict]:
     """Add score field to each article using keyword scoring."""
     for a in articles:
         a["score"] = score_article(a)
-        a["verdict"] = a["title"][:85]
+        a["verdict"] = a["title"]
     return articles
 
 
@@ -109,11 +109,14 @@ def analyze_with_ai(articles: list[dict]) -> tuple[list[dict], bool]:
 — no-code платформы и автоматизация
 — практические кейсы применения ИИ
 
-Для каждой статьи ответь строго в формате (одна строка):
+Для каждой статьи ответь строго в формате (одна строка на русском языке):
 [N] SCORE | SUMMARY
 
-где SCORE — целое число от 0 до 5, SUMMARY — одна строка до 90 символов на русском.
-Никаких звёздочек, только число.
+Правила:
+- SCORE — целое число от 0 до 5, без звёздочек
+- SUMMARY — краткое описание статьи на русском языке, законченное предложение, не обрывай на середине
+- Не используй английский язык в SUMMARY
+- Пример: [1] 4 | Apple запускает первого AI-агента для бизнес-переписки в Messages.
 
 Статьи:
 {numbered}"""
@@ -123,7 +126,7 @@ def analyze_with_ai(articles: list[dict]) -> tuple[list[dict], bool]:
         response = client.chat.completions.create(
             model="llama-3.1-8b-instant",
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=1024,
+            max_tokens=2048,
         )
         raw = response.choices[0].message.content
         # Parse scores back into articles
@@ -143,7 +146,7 @@ def analyze_with_ai(articles: list[dict]) -> tuple[list[dict], bool]:
         for a in articles:
             if "score" not in a:
                 a["score"] = score_article(a)
-                a["verdict"] = a["title"][:85]
+                a["verdict"] = a["title"]
         return articles, True
     except Exception as e:
         console.print(f"[yellow]Groq недоступен ({e}), использую авто-скоринг[/yellow]")
@@ -164,7 +167,7 @@ def format_telegram_message(articles: list[dict], hours: int) -> str:
     else:
         for a in top:
             stars = "⭐" * a["score"]
-            verdict = a.get("verdict", a["title"])[:90]
+            verdict = a.get("verdict", a["title"])
             lines.append(f"{stars} <b>{verdict}</b>")
             lines.append(f'<a href="{a["url"]}">Читать →</a>\n')
 
@@ -208,7 +211,7 @@ def print_digest(articles: list[dict], used_ai: bool) -> None:
     console.print(f"\n[bold yellow]Оценка релевантности ({label}):[/bold yellow]")
     for i, a in enumerate(articles, 1):
         stars = "⭐" * a.get("score", 0)
-        verdict = a.get("verdict", a["title"])[:85]
+        verdict = a.get("verdict", a["title"])
         console.print(f"[{i}] {stars} {a.get('score', 0)}/5 | {verdict}")
 
     console.print("\n[bold yellow]Ссылки:[/bold yellow]")
