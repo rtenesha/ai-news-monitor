@@ -4,7 +4,7 @@
 import os
 import sys
 import feedparser
-from google import genai
+from groq import Groq
 from datetime import datetime, timedelta, timezone
 from rich.console import Console
 from rich.panel import Panel
@@ -102,10 +102,10 @@ def analyze_local(articles: list[dict]) -> str:
 
 
 def analyze_with_ai(articles: list[dict]) -> tuple[str, bool]:
-    """Rate articles using free Google Gemini API; falls back to keyword scoring."""
-    api_key = os.getenv("GEMINI_API_KEY")
+    """Rate articles using free Groq API (Llama 3); falls back to keyword scoring."""
+    api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
-        console.print("[dim]Подсказка: добавь GEMINI_API_KEY в .env для AI-анализа (бесплатно на aistudio.google.com)[/dim]")
+        console.print("[dim]Подсказка: добавь GROQ_API_KEY в .env для AI-анализа (бесплатно на console.groq.com)[/dim]")
         return analyze_local(articles), False
 
     numbered = "\n\n".join(
@@ -126,14 +126,15 @@ def analyze_with_ai(articles: list[dict]) -> tuple[str, bool]:
 {numbered}"""
 
     try:
-        client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=prompt,
+        client = Groq(api_key=api_key)
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=1024,
         )
-        return response.text, True
+        return response.choices[0].message.content, True
     except Exception as e:
-        console.print(f"[yellow]Gemini недоступен ({e}), использую авто-скоринг[/yellow]")
+        console.print(f"[yellow]Groq недоступен ({e}), использую авто-скоринг[/yellow]")
         return analyze_local(articles), False
 
 
@@ -147,7 +148,7 @@ def print_digest(articles: list[dict], analysis: str, used_claude: bool) -> None
         expand=False,
     ))
 
-    label = "[bold yellow]Оценка релевантности (Gemini AI — бесплатно):[/bold yellow]" if used_claude \
+    label = "[bold yellow]Оценка релевантности (Llama 3 via Groq — бесплатно):[/bold yellow]" if used_claude \
         else "[bold yellow]Оценка релевантности (авто-скоринг по ключевым словам):[/bold yellow]"
     console.print(f"\n{label}")
     console.print(analysis)
