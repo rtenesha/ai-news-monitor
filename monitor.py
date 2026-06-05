@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """AI News Monitor — автоматический дайджест ИИ-новостей для контент-менеджеров."""
 
+import json
 import os
 import sys
+import urllib.request
 import feedparser
 from groq import Groq
 from datetime import datetime, timedelta, timezone
@@ -15,9 +17,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 FEEDS = [
-    {"name": "Zerocoder",  "url": "https://ya.zerocoder.ru/feed/"},
-    {"name": "ZDNet",      "url": "https://www.zdnet.com/news/rss.xml"},
-    {"name": "Forbes AI",  "url": "https://www.forbes.com/ai/feed2.xml"},
+    {"name": "Zerocoder",     "url": "https://ya.zerocoder.ru/feed/"},
+    {"name": "ZDNet",         "url": "https://www.zdnet.com/news/rss.xml"},
+    {"name": "Forbes AI",     "url": "https://www.forbes.com/ai/feed2.xml"},
     {"name": "TechCrunch AI", "url": "https://techcrunch.com/category/artificial-intelligence/feed/"},
 ]
 
@@ -28,7 +30,6 @@ KEYWORDS = [
     "агент", "agent", "workflow",
 ]
 
-# High-value keywords bump the score by 2; others by 1
 HIGH_VALUE = {"chatgpt", "claude", "gpt", "llm", "gemini", "midjourney",
               "no-code", "nocode", "нейросеть", "нейросети", "автоматизация", "agent"}
 
@@ -36,10 +37,8 @@ console = Console()
 
 
 def fetch_articles(hours: int = 24) -> list[dict]:
-    """Fetch articles from all feeds published in the last N hours."""
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     articles = []
-
     for feed_info in FEEDS:
         console.print(f"  Загружаю [cyan]{feed_info['name']}[/cyan]...", end=" ")
         try:
@@ -63,12 +62,10 @@ def fetch_articles(hours: int = 24) -> list[dict]:
             console.print(f"[green]{count} статей[/green]")
         except Exception as e:
             console.print(f"[red]ошибка: {e}[/red]")
-
     return articles
 
 
 def filter_by_keywords(articles: list[dict]) -> list[dict]:
-    """Keep only articles that contain at least one keyword."""
     result = []
     for a in articles:
         text = (a["title"] + " " + a["summary"]).lower()
@@ -78,7 +75,6 @@ def filter_by_keywords(articles: list[dict]) -> list[dict]:
 
 
 def score_article(article: dict) -> int:
-    """Score 1–5 based on keyword frequency; used as fallback without API key."""
     text = (article["title"] + " " + article["summary"]).lower()
     score = 0
     for kw in KEYWORDS:
@@ -87,25 +83,19 @@ def score_article(article: dict) -> int:
     return min(5, max(1, score))
 
 
-def smart_summary(title: str) -> str:
-    """Return first 85 chars of title as a short description."""
-    return title[:85]
+def analyze_local(articles: list[dict]) -> list[dict]:
+    """Add score field to each article using keyword scoring."""
+    for a in articles:
+        a["score"] = score_article(a)
+        a["verdict"] = a["title"][:85]
+    return articles
 
 
-def analyze_local(articles: list[dict]) -> str:
-    """Keyword-based scoring — instant fallback, no network needed."""
-    lines = []
-    for i, a in enumerate(articles, 1):
-        stars = score_article(a)
-        lines.append(f"[{i}] {'⭐' * stars} {stars}/5 | О чём: {smart_summary(a['title'])}")
-    return "\n".join(lines)
-
-
-def analyze_with_ai(articles: list[dict]) -> tuple[str, bool]:
-    """Rate articles using free Groq API (Llama 3); falls back to keyword scoring."""
+def analyze_with_ai(articles: list[dict]) -> tuple[list[dict], bool]:
+    """Rate articles with Groq/Llama 3; falls back to keyword scoring."""
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
-        console.print("[dim]Подсказка: добавь GROQ_API_KEY в .env для AI-анализа (бесплатно на console.groq.com)[/dim]")
+        console.print("[dim]Подсказка: добавь GROQ_API_KEY в .env (бесплатно на console.groq.com)[/dim]")
         return analyze_local(articles), False
 
     numbered = "\n\n".join(
@@ -119,8 +109,11 @@ def analyze_with_ai(articles: list[dict]) -> tuple[str, bool]:
 — no-code платформы и автоматизация
 — практические кейсы применения ИИ
 
-Для каждой статьи ответь строго в формате:
-[N] ⭐ X/5 | О чём: <одна строка, максимум 90 символов>
+Для каждой статьи ответь строго в формате (одна строка):
+[N] SCORE | SUMMARY
+
+где SCORE — целое число от 0 до 5, SUMMARY — одна строка до 90 символов на русском.
+Никаких звёздочек, только число.
 
 Статьи:
 {numbered}"""
@@ -132,35 +125,100 @@ def analyze_with_ai(articles: list[dict]) -> tuple[str, bool]:
             messages=[{"role": "user", "content": prompt}],
             max_tokens=1024,
         )
-        return response.choices[0].message.content, True
+        raw = response.choices[0].message.content
+        # Parse scores back into articles
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line or not line.startswith("["):
+                continue
+            try:
+                idx = int(line[1:line.index("]")]) - 1
+                rest = line[line.index("]") + 1:].strip().lstrip("|").strip()
+                score_str, _, verdict = rest.partition("|")
+                articles[idx]["score"] = min(5, max(0, int(score_str.strip())))
+                articles[idx]["verdict"] = verdict.strip()
+            except (ValueError, IndexError):
+                continue
+        # Fill any articles that weren't parsed
+        for a in articles:
+            if "score" not in a:
+                a["score"] = score_article(a)
+                a["verdict"] = a["title"][:85]
+        return articles, True
     except Exception as e:
         console.print(f"[yellow]Groq недоступен ({e}), использую авто-скоринг[/yellow]")
         return analyze_local(articles), False
 
 
-def print_digest(articles: list[dict], analysis: str, used_claude: bool) -> None:
-    """Print the final digest to the terminal."""
+def format_telegram_message(articles: list[dict], hours: int) -> str:
+    """Format digest as Telegram HTML message."""
+    date_str = datetime.now().strftime("%d.%m.%Y")
+    top = [a for a in articles if a.get("score", 0) >= 3]
+    top = sorted(top, key=lambda x: x.get("score", 0), reverse=True)
+
+    lines = [f"📰 <b>Дайджест ИИ-новостей — {date_str}</b>"]
+    lines.append(f"<i>За последние {hours} ч. | Топ релевантных статей</i>\n")
+
+    if not top:
+        lines.append("Сегодня нет статей с оценкой 3+. Попробуй расширить период.")
+    else:
+        for a in top:
+            stars = "⭐" * a["score"]
+            verdict = a.get("verdict", a["title"])[:90]
+            lines.append(f"{stars} <b>{verdict}</b>")
+            lines.append(f'<a href="{a["url"]}">Читать →</a>\n')
+
+    lines.append(f"<i>Всего найдено релевантных: {len(articles)}</i>")
+    return "\n".join(lines)
+
+
+def send_to_telegram(text: str) -> bool:
+    """Send message via Telegram Bot API. Returns True on success."""
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        return False
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = json.dumps({
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": False,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=payload, headers={"Content-Type": "application/json"}
+    )
+    try:
+        urllib.request.urlopen(req, timeout=10)
+        return True
+    except Exception as e:
+        console.print(f"[red]Telegram: ошибка отправки — {e}[/red]")
+        return False
+
+
+def print_digest(articles: list[dict], used_ai: bool) -> None:
     date_str = datetime.now().strftime("%d.%m.%Y")
     console.print()
     console.print(Panel(
         f"[bold white]📰 Дайджест ИИ-новостей — {date_str}[/bold white]",
-        border_style="blue",
-        expand=False,
+        border_style="blue", expand=False,
     ))
+    label = "Llama 3 via Groq — бесплатно" if used_ai else "авто-скоринг по ключевым словам"
+    console.print(f"\n[bold yellow]Оценка релевантности ({label}):[/bold yellow]")
+    for i, a in enumerate(articles, 1):
+        stars = "⭐" * a.get("score", 0)
+        verdict = a.get("verdict", a["title"])[:85]
+        console.print(f"[{i}] {stars} {a.get('score', 0)}/5 | {verdict}")
 
-    label = "[bold yellow]Оценка релевантности (Llama 3 via Groq — бесплатно):[/bold yellow]" if used_claude \
-        else "[bold yellow]Оценка релевантности (авто-скоринг по ключевым словам):[/bold yellow]"
-    console.print(f"\n{label}")
-    console.print(analysis)
-
-    console.print("\n[bold yellow]Ссылки на статьи:[/bold yellow]")
+    console.print("\n[bold yellow]Ссылки:[/bold yellow]")
     table = Table(box=box.SIMPLE, show_header=True, header_style="bold cyan")
     table.add_column("#", width=3)
     table.add_column("Источник", width=14)
-    table.add_column("Заголовок", width=55)
+    table.add_column("Заголовок", width=50)
     table.add_column("Ссылка")
     for i, a in enumerate(articles, 1):
-        table.add_row(str(i), a["source"], a["title"][:55], a["url"])
+        table.add_row(str(i), a["source"], a["title"][:50], a["url"])
     console.print(table)
 
 
@@ -187,12 +245,23 @@ def main() -> None:
         return
 
     console.print("\n[bold]3. Анализирую статьи с помощью AI...[/bold]")
-    analysis, used_claude = analyze_with_ai(relevant[:10])
+    articles, used_ai = analyze_with_ai(relevant[:10])
 
-    print_digest(relevant[:10], analysis, used_claude)
+    print_digest(articles, used_ai)
+
+    # Send to Telegram if configured
+    tg_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    tg_chat = os.getenv("TELEGRAM_CHAT_ID")
+    if tg_token and tg_chat:
+        console.print("\n[bold]4. Отправляю в Telegram...[/bold]", end=" ")
+        msg = format_telegram_message(articles, hours)
+        if send_to_telegram(msg):
+            console.print("[green]отправлено![/green]")
+    else:
+        console.print("\n[dim]Telegram не настроен — добавь TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID в .env[/dim]")
 
     console.print(
-        f"\n[dim]Готово. Обработано {min(len(relevant), 10)} из {len(relevant)} релевантных статей.[/dim]"
+        f"\n[dim]Готово. Обработано {len(articles)} из {len(relevant)} релевантных статей.[/dim]"
     )
 
 
