@@ -19,25 +19,30 @@
 
 1. Загружаю RSS-ленты...
   Загружаю Zerocoder... 0 статей
-  Загружаю ZDNet... 18 статей
+  Загружаю ZDNet... 19 статей
   Загружаю Forbes AI... 0 статей
   Загружаю TechCrunch AI... 10 статей
 
-Всего найдено: 28 статей
+Всего найдено: 29 статей
 
 2. Фильтрую по ключевым словам...
 Релевантных: 10
 
-3. Анализирую с помощью Claude...
+3. Анализирую статьи с помощью AI...
 
 📰 Дайджест ИИ-новостей — 05.06.2026
 
-Оценка релевантности (Claude):
-[1] ⭐ 5/5 | О чём: Apple approves first AI agent on its Messenger platform
-[2] ⭐ 4/5 | О чём: Anthropic's Daniela Amodei on IPO plans and company vision
-[3] ⭐ 4/5 | О чём: Meta rolls out new AI creator assistant on Facebook
-[4] ⭐ 3/5 | О чём: Google Drive's new AI cleanup tool tested in real conditions
-[5] ⭐ 2/5 | О чём: Microsoft continues its big Linux push at Build 2026
+Оценка релевантности (Llama 3 via Groq — бесплатно):
+[1] ⭐ 1/5 | О чём: Рецензия на функцию автоматизации файловой системы Google Drive.
+[2] ⭐ 0/5 | О чём: Рецензия на наушники и их характеристики при путешествии.
+[3] ⭐ 3/5 | О чём: Оценка Microsoft 365 Premium и сравнение с ChatGPT Plus.
+[4] ⭐ 4/5 | О чём: Обновления Microsoft в отношении поддержки Linux на Build 2026.
+[5] ⭐ 2/5 | О чём: Публичное появление Мира Мурати и её деятельность в области ИИ.
+[6] ⭐ 4/5 | О чём: Краткий обзор перспектив Anthropic накануне IPO.
+[7] ⭐ 3/5 | О чём: Анонс Airbnb о запуске нового лаборатория ИИ.
+[8] ⭐ 1/5 | О чём: Конференция на тему ИИ, технологий обороны и инвестиций.
+[9] ⭐ 4/5 | О чём: AI-агент Poke в Apple Messages для бизнеса — первый в своём роде.
+[10] ⭐ 4/5 | О чём: Meta запускает AI-ассистента для создателей контента в Facebook.
 ```
 
 ### Настройка в Feedly
@@ -70,20 +75,23 @@ final_project/
 
 ```bash
 # 1. Клонировать репозиторий
-git clone https://github.com/gavrish921/ai-news-monitor.git
+git clone https://github.com/rtenesha/ai-news-monitor.git
 cd ai-news-monitor
 
 # 2. Установить зависимости
 pip3 install -r requirements.txt
 
-# 3. Добавить API-ключ
+# 3. Добавить бесплатный API-ключ Groq
+#    Получить на console.groq.com (только email, без карты)
 cp .env.example .env
-# вставить свой ANTHROPIC_API_KEY в .env
+# вставить GROQ_API_KEY в .env
 
 # 4. Запустить
 python3 monitor.py          # дайджест за 24 часа
 python3 monitor.py 72       # за 72 часа
 ```
+
+> Без ключа скрипт тоже работает — использует авто-скоринг по ключевым словам.
 
 ---
 
@@ -97,6 +105,13 @@ python3 monitor.py 72       # за 72 часа
 ```
 
 Скилл запускает `monitor.py`, выводит оценённые статьи и предлагает выбрать топ-пики для контент-плана.
+
+## AI-движок
+
+| Режим | Модель | Стоимость |
+|-------|--------|-----------|
+| С ключом | Llama 3.1 8B через [Groq](https://console.groq.com) | Бесплатно (14 400 запросов/день) |
+| Без ключа | Авто-скоринг по ключевым словам | Бесплатно, без регистрации |
 
 ---
 
