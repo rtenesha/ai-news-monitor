@@ -17,10 +17,16 @@ from dotenv import load_dotenv
 load_dotenv()
 
 FEEDS = [
-    {"name": "Zerocoder",     "url": "https://ya.zerocoder.ru/feed/"},
-    {"name": "ZDNet",         "url": "https://www.zdnet.com/news/rss.xml"},
-    {"name": "Forbes AI",     "url": "https://www.forbes.com/ai/feed2.xml"},
-    {"name": "TechCrunch AI", "url": "https://techcrunch.com/category/artificial-intelligence/feed/"},
+    {"name": "Zerocoder",        "url": "https://ya.zerocoder.ru/feed/"},
+    {"name": "ZDNet",            "url": "https://www.zdnet.com/news/rss.xml"},
+    {"name": "Forbes AI",        "url": "https://www.forbes.com/ai/feed2.xml"},
+    {"name": "TechCrunch AI",    "url": "https://techcrunch.com/category/artificial-intelligence/feed/"},
+    {"name": "OpenAI Blog",      "url": "https://openai.com/blog/rss.xml"},
+    {"name": "HuggingFace Blog", "url": "https://huggingface.co/blog/feed.xml"},
+    {"name": "DeepMind Blog",    "url": "https://deepmind.google/blog/rss.xml"},
+    {"name": "Karpathy",         "url": "https://karpathy.substack.com/feed"},
+    {"name": "One Useful Thing", "url": "https://www.oneusefulthing.org/feed"},
+    {"name": "DAIR AI",          "url": "https://medium.com/feed/dair-ai"},
 ]
 
 KEYWORDS = [
