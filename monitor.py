@@ -3,6 +3,7 @@
 
 import json
 import os
+import re
 import sys
 import urllib.request
 import feedparser
@@ -108,21 +109,22 @@ def analyze_with_ai(articles: list[dict]) -> tuple[list[dict], bool]:
         f"[{i+1}] {a['source']}: {a['title']}\n{a['summary']}"
         for i, a in enumerate(articles)
     )
-    prompt = f"""Ты — ассистент контент-менеджера Telegram-канала об ИИ и no-code.
+    prompt = f"""Ты — опытный русскоязычный редактор Telegram-канала об ИИ и no-code.
 
 Оцени статьи по релевантности для аудитории, которой интересны:
 — новые ИИ-инструменты и нейросети
 — no-code платформы и автоматизация
 — практические кейсы применения ИИ
 
-Для каждой статьи ответь строго в формате (одна строка на русском языке):
+Для каждой статьи ответь строго в формате (одна строка):
 [N] SCORE | SUMMARY
 
 Правила:
 - SCORE — целое число от 0 до 5, без звёздочек
-- SUMMARY — краткое описание статьи на русском языке, законченное предложение, не обрывай на середине
-- Не используй английский язык в SUMMARY
-- Пример: [1] 4 | Apple запускает первого AI-агента для бизнес-переписки в Messages.
+- SUMMARY — одно законченное предложение на живом русском языке: не переводи дословно, передавай суть
+- Никакого канцелярита: «запустил» вместо «осуществил запуск», конкретные глаголы вместо «является»
+- Только русский язык, никакого английского в SUMMARY
+- Пример: [1] 4 | OpenAI запустила ИИ-агента для деловой переписки прямо в приложении Messages.
 
 Статьи:
 {numbered}"""
@@ -130,8 +132,11 @@ def analyze_with_ai(articles: list[dict]) -> tuple[list[dict], bool]:
     try:
         client = Groq(api_key=api_key)
         response = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
-            messages=[{"role": "user", "content": prompt}],
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": "Ты пишешь исключительно на русском языке. Никаких китайских, японских или других иероглифов — только кириллица, латиница в именах собственных и цифры."},
+                {"role": "user", "content": prompt},
+            ],
             max_tokens=2048,
         )
         raw = response.choices[0].message.content
@@ -145,7 +150,7 @@ def analyze_with_ai(articles: list[dict]) -> tuple[list[dict], bool]:
                 rest = line[line.index("]") + 1:].strip().lstrip("|").strip()
                 score_str, _, verdict = rest.partition("|")
                 articles[idx]["score"] = min(5, max(0, int(score_str.strip())))
-                articles[idx]["verdict"] = verdict.strip()
+                articles[idx]["verdict"] = re.sub(r'[^ -Ѐ-ӿ -➿\U0001F000-\U0001FAFF]', '', verdict).strip()
             except (ValueError, IndexError):
                 continue
         # Fill any articles that weren't parsed
