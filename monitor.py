@@ -38,11 +38,13 @@ KEYWORDS = [
     "OpenAI", "Anthropic", "Siri", "Apple Intelligence", "Google AI",
     "Microsoft AI", "Llama", "Mistral", "Grok", "xAI",
     "WWDC", "GPT-4", "GPT-5", "Copilot", "neural network",
+    "вайбкодинг", "vibe coding", "vibecoding",
 ]
 
 HIGH_VALUE = {"chatgpt", "claude", "gpt", "llm", "gemini", "midjourney",
               "no-code", "nocode", "нейросеть", "нейросети", "автоматизация", "agent",
-              "openai", "anthropic", "llama", "mistral", "grok", "sora", "copilot"}
+              "openai", "anthropic", "llama", "mistral", "grok", "sora", "copilot",
+              "вайбкодинг", "vibe coding", "vibecoding"}
 
 console = Console()
 
@@ -113,11 +115,11 @@ def analyze_with_ai(articles: list[dict]) -> tuple[list[dict], bool]:
         f"[{i+1}] {a['source']}: {a['title']}\n{a['summary']}"
         for i, a in enumerate(articles)
     )
-    prompt = f"""Ты — опытный русскоязычный редактор Telegram-канала об ИИ и no-code.
+    prompt = f"""Ты — опытный русскоязычный редактор Telegram-канала об ИИ и вайбкодинге.
 
 Оцени статьи по релевантности для аудитории, которой интересны:
 — новые ИИ-инструменты и нейросети
-— no-code платформы и автоматизация
+— вайбкодинг и автоматизация с помощью ИИ
 — практические кейсы применения ИИ
 
 Для каждой статьи ответь строго в формате (одна строка):

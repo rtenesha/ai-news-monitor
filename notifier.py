@@ -34,11 +34,13 @@ KEYWORDS = [
     "OpenAI", "Anthropic", "Siri", "Apple Intelligence", "Google AI",
     "Microsoft AI", "Llama", "Mistral", "Grok", "xAI",
     "WWDC", "GPT-4", "GPT-5", "Copilot", "neural network",
+    "вайбкодинг", "vibe coding", "vibecoding",
 ]
 
 HIGH_VALUE = {"chatgpt", "claude", "gpt", "llm", "gemini", "midjourney",
               "no-code", "nocode", "нейросеть", "нейросети", "автоматизация", "agent",
-              "openai", "anthropic", "llama", "mistral", "grok", "sora", "copilot"}
+              "openai", "anthropic", "llama", "mistral", "grok", "sora", "copilot",
+              "вайбкодинг", "vibe coding", "vibecoding"}
 
 
 def fetch_recent(hours: int = 1) -> list[dict]:
@@ -124,14 +126,14 @@ def generate_post(article: dict) -> str:
         return fallback
 
     prompt = (
-        "Ты — редактор Telegram-канала Zerocoder об ИИ и no-code. "
+        "Ты — редактор Telegram-канала Zerocoder об ИИ и вайбкодинге. "
         "Пишешь от первого лица.\n\n"
         "Напиши пост для канала на основе статьи ниже.\n\n"
         "Стиль:\n"
         "- От первого лица: «я», «нашла», «мне кажется», «обратила внимание»\n"
         "- Тёплый и живой — как будто делишься находкой с коллегой, которому доверяешь\n"
         "- Умеренный энтузиазм: не «я просто в восторге!!!!», а «это действительно интересно, потому что...»\n"
-        "- Ровно 2 предложения о сути — одна конкретная мысль, зачем это знать специалисту по ИИ или no-code\n"
+        "- Ровно 2 предложения о сути — одна конкретная мысль, зачем это знать специалисту по ИИ или вайбкодингу\n"
         "- Начни с эмодзи по теме: \U0001f4a1 \U0001f680 \U0001f50d \U0001f4bb \U0001f9e0 \U0001f4ca ⚡ \U0001f6e0 \U0001f310 — "
         "не используй \U0001f916\n"
         f"- Последняя строка — приём вовлечения «{_engagement_label()}». "
