@@ -35,10 +35,14 @@ KEYWORDS = [
     "ChatGPT", "Claude", "Midjourney", "Gemini", "GPT", "LLM",
     "AI", "artificial intelligence", "machine learning", "automation",
     "агент", "agent", "workflow",
+    "OpenAI", "Anthropic", "Siri", "Apple Intelligence", "Google AI",
+    "Microsoft AI", "Llama", "Mistral", "Grok", "xAI",
+    "WWDC", "GPT-4", "GPT-5", "Copilot", "neural network",
 ]
 
 HIGH_VALUE = {"chatgpt", "claude", "gpt", "llm", "gemini", "midjourney",
-              "no-code", "nocode", "нейросеть", "нейросети", "автоматизация", "agent"}
+              "no-code", "nocode", "нейросеть", "нейросети", "автоматизация", "agent",
+              "openai", "anthropic", "llama", "mistral", "grok", "sora", "copilot"}
 
 console = Console()
 

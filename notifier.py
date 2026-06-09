@@ -31,10 +31,14 @@ KEYWORDS = [
     "ChatGPT", "Claude", "Midjourney", "Gemini", "GPT", "LLM",
     "AI", "artificial intelligence", "machine learning", "automation",
     "агент", "agent", "workflow",
+    "OpenAI", "Anthropic", "Siri", "Apple Intelligence", "Google AI",
+    "Microsoft AI", "Llama", "Mistral", "Grok", "xAI",
+    "WWDC", "GPT-4", "GPT-5", "Copilot", "neural network",
 ]
 
 HIGH_VALUE = {"chatgpt", "claude", "gpt", "llm", "gemini", "midjourney",
-              "no-code", "nocode", "нейросеть", "нейросети", "автоматизация", "agent"}
+              "no-code", "nocode", "нейросеть", "нейросети", "автоматизация", "agent",
+              "openai", "anthropic", "llama", "mistral", "grok", "sora", "copilot"}
 
 
 def fetch_recent(hours: int = 1) -> list[dict]:
@@ -178,7 +182,7 @@ def main():
         a for a in articles
         if any(kw.lower() in (a["title"] + " " + a["summary"]).lower() for kw in KEYWORDS)
     ]
-    hot = [a for a in relevant if score_article(a) >= 3]
+    hot = [a for a in relevant if score_article(a) >= 2]
 
     print(f"Новых статей за час: {len(articles)}, релевантных: {len(relevant)}, горячих (3+): {len(hot)}")
 
