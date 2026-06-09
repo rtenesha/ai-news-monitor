@@ -177,14 +177,14 @@ def send_to_telegram(text: str) -> bool:
 
 
 def main():
-    articles = fetch_recent(hours=1)
+    articles = fetch_recent(hours=2)
     relevant = [
         a for a in articles
         if any(kw.lower() in (a["title"] + " " + a["summary"]).lower() for kw in KEYWORDS)
     ]
     hot = [a for a in relevant if score_article(a) >= 2]
 
-    print(f"Новых статей за час: {len(articles)}, релевантных: {len(relevant)}, горячих (3+): {len(hot)}")
+    print(f"Новых статей за 2ч: {len(articles)}, релевантных: {len(relevant)}, горячих (2+): {len(hot)}")
 
     for article in hot:
         post = generate_post(article)
