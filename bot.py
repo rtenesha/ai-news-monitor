@@ -3,7 +3,7 @@
 
 import os
 import logging
-from telegram import Update
+from telegram import Update, BotCommand
 from telegram.ext import Application, CommandHandler, ContextTypes
 from dotenv import load_dotenv
 
@@ -50,12 +50,20 @@ async def cmd_news7(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _send_digest(update, 168)
 
 
+async def post_init(app: Application) -> None:
+    await app.bot.set_my_commands([
+        BotCommand("news2",  "Новости за 2 часа"),
+        BotCommand("news24", "Новости за 24 часа"),
+        BotCommand("news7",  "Новости за 7 дней"),
+    ])
+
+
 def main() -> None:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN не задан в .env")
 
-    app = Application.builder().token(token).build()
+    app = Application.builder().token(token).post_init(post_init).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("news2", cmd_news2))
     app.add_handler(CommandHandler("news24", cmd_news24))
