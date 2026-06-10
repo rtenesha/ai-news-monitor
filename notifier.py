@@ -13,6 +13,26 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+SENT_URLS_FILE = os.getenv("SENT_URLS_FILE", "sent_urls.txt")
+
+
+def load_sent_urls() -> set[str]:
+    if not os.path.exists(SENT_URLS_FILE):
+        return set()
+    with open(SENT_URLS_FILE) as f:
+        return {line.strip() for line in f if line.strip()}
+
+
+def save_sent_url(url: str, all_sent: set[str]) -> None:
+    all_sent.add(url)
+    lines = sorted(all_sent)
+    # Обрезаем до 3000 записей чтобы файл не рос бесконечно
+    if len(lines) > 3000:
+        lines = lines[-3000:]
+    with open(SENT_URLS_FILE, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+
 FEEDS = [
     {"name": "Zerocoder",        "url": "https://ya.zerocoder.ru/feed/"},
     {"name": "ZDNet",            "url": "https://www.zdnet.com/news/rss.xml"},
@@ -206,13 +226,15 @@ def send_to_telegram(text: str) -> bool:
 
 
 def main():
-    articles = fetch_recent(hours=3)
-    # Дедупликация по URL
-    seen_urls: set[str] = set()
+    sent_urls = load_sent_urls()
+
+    articles = fetch_recent(hours=24)
+    # Дедупликация по URL + фильтр уже отправленных
+    seen: set[str] = set()
     unique = []
     for a in articles:
-        if a["url"] not in seen_urls:
-            seen_urls.add(a["url"])
+        if a["url"] not in seen and a["url"] not in sent_urls:
+            seen.add(a["url"])
             unique.append(a)
 
     relevant = [
@@ -221,11 +243,12 @@ def main():
     ]
     hot = [a for a in relevant if score_article(a) >= 2]
 
-    print(f"Новых статей за 3ч: {len(unique)}, релевантных: {len(relevant)}, горячих (2+): {len(hot)}")
+    print(f"Новых за 24ч: {len(unique)}, релевантных: {len(relevant)}, горячих (2+): {len(hot)}")
 
     for article in hot:
         post = generate_post(article)
         if send_to_telegram(post):
+            save_sent_url(article["url"], sent_urls)
             print(f"Отправлено: {article['title']}")
 
     if not hot:
