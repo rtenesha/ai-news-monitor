@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Telegram bot — on-demand AI news digests via /news2, /news24, /news7."""
+"""Telegram bot — on-demand AI news posts via /news2, /news24, /news7."""
 
 import os
 import logging
@@ -7,7 +7,8 @@ from telegram import Update, BotCommand
 from telegram.ext import Application, CommandHandler, ContextTypes
 from dotenv import load_dotenv
 
-from monitor import fetch_articles, filter_by_keywords, analyze_with_ai, format_telegram_message
+from monitor import fetch_articles, filter_by_keywords
+from notifier import score_article, generate_post
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -15,46 +16,58 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "Привет! Запрашивай новости когда нужно:\n\n"
-        "/news2 — за последние 2 часа\n"
-        "/news24 — за последние 24 часа\n"
-        "/news7 — за последние 7 дней"
+        "Привет! Запрашивай свежие новости когда нужно:\n\n"
+        "/news2 — горячее за последние 2 часа\n"
+        "/news24 — лучшее за сутки\n"
+        "/news7 — главное за неделю"
     )
 
 
-async def _send_digest(update: Update, hours: int) -> None:
+async def _send_posts(update: Update, hours: int) -> None:
     period = {2: "2 часа", 24: "24 часа", 168: "7 дней"}[hours]
-    msg = await update.message.reply_text(f"Собираю новости за {period}…")
+    # Лимит на количество постов чтобы не спамить
+    limit = {2: 5, 24: 7, 168: 10}[hours]
+
+    status = await update.message.reply_text(f"Ищу новости за {period}…")
 
     articles = fetch_articles(hours)
     relevant = filter_by_keywords(articles)
+    hot = sorted(
+        [a for a in relevant if score_article(a) >= 2],
+        key=lambda a: score_article(a),
+        reverse=True,
+    )[:limit]
 
-    if not relevant:
-        await msg.edit_text(f"За последние {period} ничего релевантного не нашлось.")
+    if not hot:
+        await status.edit_text(f"За последние {period} ничего горячего не нашлось.")
         return
 
-    analyzed, _ = analyze_with_ai(relevant[:15])
-    text = format_telegram_message(analyzed, hours)
-    await msg.edit_text(text, parse_mode="HTML", disable_web_page_preview=False)
+    await status.edit_text(f"Нашла {len(hot)} материалов, генерирую посты…")
+
+    for article in hot:
+        post = generate_post(article)
+        await update.message.reply_html(post, disable_web_page_preview=False)
+
+    await status.delete()
 
 
 async def cmd_news2(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _send_digest(update, 2)
+    await _send_posts(update, 2)
 
 
 async def cmd_news24(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _send_digest(update, 24)
+    await _send_posts(update, 24)
 
 
 async def cmd_news7(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await _send_digest(update, 168)
+    await _send_posts(update, 168)
 
 
 async def post_init(app: Application) -> None:
     await app.bot.set_my_commands([
-        BotCommand("news2",  "Новости за 2 часа"),
-        BotCommand("news24", "Новости за 24 часа"),
-        BotCommand("news7",  "Новости за 7 дней"),
+        BotCommand("news2",  "🔥 Горячее за последние 2 часа"),
+        BotCommand("news24", "📰 Лучшее за сутки"),
+        BotCommand("news7",  "📅 Главное за неделю"),
     ])
 
 
