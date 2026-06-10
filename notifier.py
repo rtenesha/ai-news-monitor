@@ -26,6 +26,7 @@ FEEDS = [
     {"name": "DAIR AI",          "url": "https://medium.com/feed/dair-ai"},
     {"name": "Хабр / ИИ",       "url": "https://habr.com/ru/rss/hubs/artificial_intelligence/articles/"},
     {"name": "Хабр / ML",       "url": "https://habr.com/ru/rss/hubs/machine_learning/articles/"},
+    {"name": "Simon Willison",  "url": "https://simonwillison.net/atom/everything/"},
 ]
 
 KEYWORDS = [
