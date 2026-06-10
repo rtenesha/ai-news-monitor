@@ -61,10 +61,11 @@ def fetch_articles(hours: int = 24) -> list[dict]:
             count = 0
             for entry in feed.entries:
                 parsed = entry.get("published_parsed") or entry.get("updated_parsed")
-                if parsed:
-                    pub_dt = datetime(*parsed[:6], tzinfo=timezone.utc)
-                    if pub_dt < cutoff:
-                        continue
+                if not parsed:
+                    continue
+                pub_dt = datetime(*parsed[:6], tzinfo=timezone.utc)
+                if pub_dt < cutoff:
+                    continue
                 summary = entry.get("summary", entry.get("description", ""))
                 articles.append({
                     "title":     entry.get("title", "Без заголовка"),
@@ -80,11 +81,19 @@ def fetch_articles(hours: int = 24) -> list[dict]:
     return articles
 
 
+def _kw_matches(kw: str, text: str) -> bool:
+    return bool(re.search(r'\b' + re.escape(kw.lower()) + r'\b', text))
+
+
 def filter_by_keywords(articles: list[dict]) -> list[dict]:
+    seen_urls: set[str] = set()
     result = []
     for a in articles:
+        if a["url"] in seen_urls:
+            continue
+        seen_urls.add(a["url"])
         text = (a["title"] + " " + a["summary"]).lower()
-        if any(kw.lower() in text for kw in KEYWORDS):
+        if any(_kw_matches(kw, text) for kw in KEYWORDS):
             result.append(a)
     return result
 
@@ -93,9 +102,9 @@ def score_article(article: dict) -> int:
     text = (article["title"] + " " + article["summary"]).lower()
     score = 0
     for kw in KEYWORDS:
-        if kw.lower() in text:
+        if _kw_matches(kw, text):
             score += 2 if kw.lower() in HIGH_VALUE else 1
-    return min(5, max(1, score))
+    return min(5, score)
 
 
 def analyze_local(articles: list[dict]) -> list[dict]:

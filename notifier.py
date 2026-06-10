@@ -70,13 +70,17 @@ def fetch_recent(hours: int = 1) -> list[dict]:
     return articles
 
 
+def _kw_matches(kw: str, text: str) -> bool:
+    return bool(re.search(r'\b' + re.escape(kw.lower()) + r'\b', text))
+
+
 def score_article(article: dict) -> int:
     text = (article["title"] + " " + article["summary"]).lower()
     score = 0
     for kw in KEYWORDS:
-        if kw.lower() in text:
+        if _kw_matches(kw, text):
             score += 2 if kw.lower() in HIGH_VALUE else 1
-    return min(5, max(1, score))
+    return min(5, score)
 
 
 def clean_text(text: str) -> str:
@@ -201,14 +205,22 @@ def send_to_telegram(text: str) -> bool:
 
 
 def main():
-    articles = fetch_recent(hours=2)
+    articles = fetch_recent(hours=3)
+    # Дедупликация по URL
+    seen_urls: set[str] = set()
+    unique = []
+    for a in articles:
+        if a["url"] not in seen_urls:
+            seen_urls.add(a["url"])
+            unique.append(a)
+
     relevant = [
-        a for a in articles
-        if any(kw.lower() in (a["title"] + " " + a["summary"]).lower() for kw in KEYWORDS)
+        a for a in unique
+        if any(_kw_matches(kw, (a["title"] + " " + a["summary"]).lower()) for kw in KEYWORDS)
     ]
     hot = [a for a in relevant if score_article(a) >= 2]
 
-    print(f"Новых статей за 2ч: {len(articles)}, релевантных: {len(relevant)}, горячих (2+): {len(hot)}")
+    print(f"Новых статей за 3ч: {len(unique)}, релевантных: {len(relevant)}, горячих (2+): {len(hot)}")
 
     for article in hot:
         post = generate_post(article)
