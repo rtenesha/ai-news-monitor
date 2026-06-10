@@ -28,6 +28,8 @@ FEEDS = [
     {"name": "Karpathy",         "url": "https://karpathy.substack.com/feed"},
     {"name": "One Useful Thing", "url": "https://www.oneusefulthing.org/feed"},
     {"name": "DAIR AI",          "url": "https://medium.com/feed/dair-ai"},
+    {"name": "Хабр / ИИ",       "url": "https://habr.com/ru/rss/hubs/artificial_intelligence/articles/"},
+    {"name": "Хабр / ML",       "url": "https://habr.com/ru/rss/hubs/machine_learning/articles/"},
 ]
 
 KEYWORDS = [
