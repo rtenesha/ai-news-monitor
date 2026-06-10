@@ -244,6 +244,9 @@ def main():
     ]
     hot = [a for a in relevant if score_article(a) >= 2]
 
+    # Максимум 7 постов за один запуск чтобы не спамить
+    hot = sorted(hot, key=lambda a: score_article(a), reverse=True)[:7]
+
     print(f"Новых за 24ч: {len(unique)}, релевантных: {len(relevant)}, горячих (2+): {len(hot)}")
 
     for article in hot:
