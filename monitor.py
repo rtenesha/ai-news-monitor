@@ -31,6 +31,10 @@ FEEDS = [
     {"name": "Хабр / ИИ",       "url": "https://habr.com/ru/rss/hubs/artificial_intelligence/articles/"},
     {"name": "Хабр / ML",       "url": "https://habr.com/ru/rss/hubs/machine_learning/articles/"},
     {"name": "Simon Willison",  "url": "https://simonwillison.net/atom/everything/"},
+    {"name": "Нейродвиж",       "url": "https://rss.app/feeds/uu56qVqY4k9879l4.xml"},
+    {"name": "PushEnter",       "url": "https://rss.app/feeds/bprrq7ZPdeYnAxa4.xml"},
+    {"name": "AI Central",      "url": "https://rss.app/feeds/FC7W2u2sNL1Qtx0X.xml"},
+    {"name": "ИИволюция",       "url": "https://rss.app/feeds/avVuy9apZYjuiARE.xml"},
 ]
 
 KEYWORDS = [
