@@ -26,6 +26,14 @@ FEEDS = [
     {"name": "PushEnter", "url": "https://rss.app/feeds/bprrq7ZPdeYnAxa4.xml"},
     {"name": "AI Central","url": "https://rss.app/feeds/FC7W2u2sNL1Qtx0X.xml"},
     {"name": "ИИволюция", "url": "https://rss.app/feeds/avVuy9apZYjuiARE.xml"},
+    {"name": "X: @aibreakfast",    "url": "https://nitter.net/aibreakfast/rss"},
+    {"name": "X: @swyx",           "url": "https://nitter.net/swyx/rss"},
+    {"name": "X: @levelsio",       "url": "https://nitter.net/levelsio/rss"},
+    {"name": "X: @emollick",       "url": "https://nitter.net/emollick/rss"},
+    {"name": "X: @huggingface",    "url": "https://nitter.net/huggingface/rss"},
+    {"name": "X: @googledeepmind", "url": "https://nitter.net/googledeepmind/rss"},
+    {"name": "X: @openai",         "url": "https://nitter.net/openai/rss"},
+    {"name": "X: @anthropicai",    "url": "https://nitter.net/anthropicai/rss"},
 ]
 
 KEYWORDS = [
