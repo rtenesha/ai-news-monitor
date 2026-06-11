@@ -34,23 +34,14 @@ def save_sent_url(url: str, all_sent: set[str]) -> None:
 
 
 FEEDS = [
-    {"name": "Zerocoder",        "url": "https://ya.zerocoder.ru/feed/"},
-    {"name": "ZDNet",            "url": "https://www.zdnet.com/news/rss.xml"},
-    {"name": "Forbes AI",        "url": "https://www.forbes.com/ai/feed2.xml"},
-    {"name": "TechCrunch AI",    "url": "https://techcrunch.com/category/artificial-intelligence/feed/"},
-    {"name": "OpenAI Blog",      "url": "https://openai.com/blog/rss.xml"},
-    {"name": "HuggingFace Blog", "url": "https://huggingface.co/blog/feed.xml"},
-    {"name": "DeepMind Blog",    "url": "https://deepmind.google/blog/rss.xml"},
-    {"name": "Karpathy",         "url": "https://karpathy.substack.com/feed"},
-    {"name": "One Useful Thing", "url": "https://www.oneusefulthing.org/feed"},
-    {"name": "DAIR AI",          "url": "https://medium.com/feed/dair-ai"},
-    {"name": "Хабр / ИИ",       "url": "https://habr.com/ru/rss/hubs/artificial_intelligence/articles/"},
-    {"name": "Хабр / ML",       "url": "https://habr.com/ru/rss/hubs/machine_learning/articles/"},
-    {"name": "Simon Willison",  "url": "https://simonwillison.net/atom/everything/"},
-    {"name": "Нейродвиж",       "url": "https://rss.app/feeds/uu56qVqY4k9879l4.xml"},
-    {"name": "PushEnter",       "url": "https://rss.app/feeds/bprrq7ZPdeYnAxa4.xml"},
-    {"name": "AI Central",      "url": "https://rss.app/feeds/FC7W2u2sNL1Qtx0X.xml"},
-    {"name": "ИИволюция",       "url": "https://rss.app/feeds/avVuy9apZYjuiARE.xml"},
+    {"name": "Zerocoder",  "url": "https://ya.zerocoder.ru/feed/"},
+    {"name": "ZDNet",      "url": "https://www.zdnet.com/news/rss.xml"},
+    {"name": "Хабр / ИИ", "url": "https://habr.com/ru/rss/hubs/artificial_intelligence/articles/"},
+    {"name": "Хабр / ML", "url": "https://habr.com/ru/rss/hubs/machine_learning/articles/"},
+    {"name": "Нейродвиж", "url": "https://rss.app/feeds/uu56qVqY4k9879l4.xml"},
+    {"name": "PushEnter", "url": "https://rss.app/feeds/bprrq7ZPdeYnAxa4.xml"},
+    {"name": "AI Central","url": "https://rss.app/feeds/FC7W2u2sNL1Qtx0X.xml"},
+    {"name": "ИИволюция", "url": "https://rss.app/feeds/avVuy9apZYjuiARE.xml"},
 ]
 
 KEYWORDS = [
