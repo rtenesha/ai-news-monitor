@@ -34,6 +34,9 @@ FEEDS = [
     {"name": "X: @googledeepmind", "url": "https://nitter.net/googledeepmind/rss"},
     {"name": "X: @openai",         "url": "https://nitter.net/openai/rss"},
     {"name": "X: @anthropicai",    "url": "https://nitter.net/anthropicai/rss"},
+    {"name": "X: @claudeai",       "url": "https://nitter.net/claudeai/rss"},
+    {"name": "X: @deepseek_ai",    "url": "https://nitter.net/deepseek_ai/rss"},
+    {"name": "X: @durov",          "url": "https://nitter.net/durov/rss"},
 ]
 
 KEYWORDS = [
