@@ -5,11 +5,14 @@ deduplication. See docs/superpowers/specs/2026-07-22-news-pipeline-design.md."""
 
 import json
 import re
+import urllib.request
 from typing import Optional
 from urllib.parse import urlsplit, parse_qsl, urlencode, urlunsplit
 
 from pydantic import BaseModel, Field, ValidationError
 from tenacity import retry, stop_after_attempt, wait_exponential
+
+import trafilatura
 
 _TRACKING_QUERY_PARAMS = {
     "fbclid", "gclid", "dclid", "igshid", "mc_cid", "mc_eid", "msclkid",
@@ -125,3 +128,26 @@ def score_article_ai(article: dict, groq_client, full_text: Optional[str] = None
     except Exception:
         return None
     return _parse_analysis_json(raw)
+
+
+_BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+
+
+def _extract_from_html(html: str) -> Optional[str]:
+    text = trafilatura.extract(html, favor_recall=True)
+    if not text or len(text) < 200:
+        return None
+    return text
+
+
+def extract_full_text(url: str) -> Optional[str]:
+    """Fetch `url` and extract the article body via trafilatura. Returns
+    None on any failure (network error, blocked page, too-short
+    extraction) — callers must fall back to the RSS summary."""
+    req = urllib.request.Request(url, headers={"User-Agent": _BROWSER_UA})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+    return _extract_from_html(html)

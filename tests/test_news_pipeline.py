@@ -74,3 +74,30 @@ def test_parse_analysis_json_missing_field_returns_none():
 def test_parse_analysis_json_none_input_returns_none():
     """Verify that score_article_ai never raises when API returns None content."""
     assert _parse_analysis_json(None) is None
+
+
+from news_pipeline import _extract_from_html
+
+_ARTICLE_HTML = """
+<html><body>
+<nav>Главная | Новости | Контакты</nav>
+<article>
+<p>""" + ("Это содержательный абзац статьи про новую модель ИИ, который повторяется. " * 6) + """</p>
+</article>
+<footer>© 2026 Test Site. Все права защищены.</footer>
+</body></html>
+"""
+
+_THIN_HTML = "<html><body><p>Слишком коротко.</p></body></html>"
+
+
+def test_extract_from_html_returns_article_body():
+    text = _extract_from_html(_ARTICLE_HTML)
+    assert text is not None
+    assert "содержательный абзац" in text
+    assert "Контакты" not in text
+    assert "Все права защищены" not in text
+
+
+def test_extract_from_html_returns_none_for_thin_content():
+    assert _extract_from_html(_THIN_HTML) is None
