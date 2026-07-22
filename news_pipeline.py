@@ -67,6 +67,8 @@ class AnalysisResult(BaseModel):
 def _parse_analysis_json(raw: str) -> Optional[AnalysisResult]:
     """Extract and validate a {score, reason, summary} JSON object from a
     raw model response, tolerating ```json fences or surrounding prose."""
+    if not isinstance(raw, str):
+        return None
     match = re.search(r"\{.*\}", raw, re.DOTALL)
     if not match:
         return None

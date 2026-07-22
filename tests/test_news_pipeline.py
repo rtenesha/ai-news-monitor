@@ -69,3 +69,8 @@ def test_parse_analysis_json_out_of_range_score_returns_none():
 def test_parse_analysis_json_missing_field_returns_none():
     raw = '{"score": 3, "summary": "y"}'
     assert _parse_analysis_json(raw) is None
+
+
+def test_parse_analysis_json_none_input_returns_none():
+    """Verify that score_article_ai never raises when API returns None content."""
+    assert _parse_analysis_json(None) is None
