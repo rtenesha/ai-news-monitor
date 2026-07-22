@@ -5,6 +5,7 @@ import json
 import os
 import random
 import re
+import socket
 import urllib.request
 import feedparser
 from groq import Groq
@@ -12,6 +13,11 @@ from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# feedparser.parse() has no built-in timeout — a single unresponsive RSS
+# source can hang the whole fetch for minutes. This caps every socket
+# operation in the process (urllib, feedparser) at 10s.
+socket.setdefaulttimeout(10)
 
 SENT_URLS_FILE = os.getenv("SENT_URLS_FILE", "sent_urls.txt")
 

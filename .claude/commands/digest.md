@@ -1,6 +1,6 @@
 # AI News Digest
 
-Run the AI news monitor to generate a daily digest of relevant AI and no-code news from configured RSS feeds.
+Run the AI news monitor to generate a daily digest of relevant AI news from configured RSS feeds.
 
 ## Usage
 

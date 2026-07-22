@@ -1,19 +1,25 @@
 #!/usr/bin/env python3
-"""Telegram bot — on-demand AI news posts via /news2, /news24, /news7,
-plus /rewrite and /reply for ad-hoc community-manager text help."""
+"""Telegram bot — on-demand AI news posts via /news2, /news24, /news7, /list7,
+plus /rewrite and /reply for ad-hoc community-manager text help,
+plus /reddit for interesting threads from AI subreddits,
+plus /post for turning an arbitrary article link into a ready Zerocoder post."""
 
 from __future__ import annotations
 
 import os
 import re
+import time
 import logging
+import urllib.request
+import urllib.parse
+import feedparser
 from datetime import datetime, timezone, timedelta
 from groq import Groq
 from telegram import Update, BotCommand
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from dotenv import load_dotenv
 
-from monitor import fetch_articles, filter_by_keywords
+from monitor import FEEDS, fetch_articles, filter_by_keywords
 from notifier import score_article, generate_post, _NATURAL_TEXT_RULES
 
 load_dotenv()
@@ -313,17 +319,24 @@ def draft_reply(text: str) -> str:
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
-        "Привет! Запрашивай свежие новости когда нужно:\n\n"
-        "/news2 — горячее за последние 2 часа\n"
-        "/news24 — лучшее за сутки\n"
-        "/news7 — главное за неделю\n\n"
-        "А ещё я умею работать с текстом:\n"
+        "Привет! Я работаю только по запросу — ничего не шлю сама.\n\n"
+        "Новости:\n"
+        "/news2 — горячее за последние 2 часа, готовые посты\n"
+        "/news24 — лучшее за сутки, готовые посты\n"
+        "/news7 — главное за неделю, готовые посты\n"
+        "/list7 — быстрый список за неделю по каждому источнику отдельно (заголовок + ссылка, без ИИ)\n"
+        "/reddit — интересные ветки из AI-сабреддитов, уже в виде готовых постов\n\n"
+        "Из ссылки — сразу пост:\n"
+        "/post <ссылка> — скинь ссылку на любую статью, я прочитаю её и напишу пост для Zerocoder "
+        "по нашему чек-листу (3 заголовка + факты + 3 CTA)\n\n"
+        "Работа с текстом:\n"
         "/rewrite <текст> — переписать под tone of voice канала. Даю сразу 3 варианта длины: "
         "длинный, покороче, самый короткий — выбирай, какой подходит под момент публикации. "
         "Если нужен конкретный этап («день» или «час» — их 3 варианта не покрывают), "
         "укажи явно: «/rewrite анонс: ...», «напоминание: ...», «день1: ...», «день: ...», «час: ...»\n"
         "/reply <текст> — набросать ответ комьюнити-менеджера на комментарий\n\n"
-        "Можно и просто ответить (reply) на сообщение с текстом этими командами вместо того чтобы копировать текст."
+        "Для /post, /rewrite и /reply можно вместо копирования текста просто ответить (reply) "
+        "на сообщение со ссылкой/текстом."
     )
 
 
@@ -365,6 +378,147 @@ async def cmd_news24(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 async def cmd_news7(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _send_posts(update, 168)
+
+
+REDDIT_SUBS = [
+    "artificial", "ChatGPT", "ClaudeAI", "LocalLLaMA",
+    "singularity", "OpenAI", "vibecoding", "SideProject",
+]
+
+# Reddit (and plenty of other sites) block requests without a real-looking
+# browser User-Agent — reused for /post's arbitrary-URL fetch too.
+_BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+
+
+def fetch_reddit_threads() -> list[dict]:
+    """Pulls threads from a curated list of AI/vibecoding subreddits via
+    Reddit's RSS feed (their JSON listing API 403s non-browser requests)."""
+    threads = []
+    for sub in REDDIT_SUBS:
+        feed = feedparser.parse(f"https://www.reddit.com/r/{sub}/.rss", agent=_BROWSER_UA)
+        if feed.get("status") == 200:
+            for entry in feed.entries:
+                summary = re.sub(r"<[^>]+>", " ", entry.get("summary", ""))
+                threads.append({
+                    "title": entry.get("title", ""),
+                    "url": entry.get("link", ""),
+                    "source": f"Reddit r/{sub}",
+                    "summary": re.sub(r"\s+", " ", summary).strip()[:600],
+                })
+        time.sleep(1.5)  # avoid tripping Reddit's rate limit across subs
+    return threads
+
+
+async def cmd_reddit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    status = await update.message.reply_text("Ищу интересные ветки на Reddit… (около 15 секунд — так надо, чтобы Reddit не отдавал 429)")
+
+    threads = fetch_reddit_threads()
+    relevant = [t for t in threads if score_article(t) >= 1]
+    ranked = sorted(relevant, key=score_article, reverse=True)
+
+    picked: list[dict] = []
+    seen_urls: set[str] = set()
+    for t in ranked:
+        if t["url"] in seen_urls:
+            continue
+        seen_urls.add(t["url"])
+        picked.append(t)
+        if len(picked) == 3:
+            break
+
+    if not picked:
+        await status.edit_text("Не нашла ничего интересного на Reddit прямо сейчас.")
+        return
+
+    await status.edit_text(f"Нашла {len(picked)} веток, генерирую посты…")
+    for t in picked:
+        post = generate_post(t)
+        await update.message.reply_html(post, disable_web_page_preview=False)
+    await status.delete()
+
+
+async def cmd_list7(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Fast weekly digest — no Groq calls, just title+link grouped by source."""
+    status = await update.message.reply_text("Собираю списки за неделю по источникам…")
+
+    articles = fetch_articles(24 * 7)
+    relevant = filter_by_keywords(articles)
+
+    by_source: dict[str, list[dict]] = {}
+    for a in relevant:
+        by_source.setdefault(a["source"], []).append(a)
+
+    if not by_source:
+        await status.edit_text("За неделю по ключевым словам ничего не нашлось.")
+        return
+
+    await status.delete()
+    max_per_source = 8
+    for feed_info in FEEDS:
+        items = by_source.get(feed_info["name"])
+        if not items:
+            continue
+        lines = [f"• {a['title']}\n  {a['url']}" for a in items[:max_per_source]]
+        text = f"📰 {feed_info['name']} ({len(items)})\n\n" + "\n\n".join(lines)
+        if len(items) > max_per_source:
+            text += f"\n\n…и ещё {len(items) - max_per_source}"
+        await update.message.reply_text(text, disable_web_page_preview=True)
+
+
+def fetch_url_article(url: str) -> dict | None:
+    """Fetches an arbitrary article page and extracts title + plain-text body,
+    so it can be fed into generate_post() the same way an RSS article would be."""
+    req = urllib.request.Request(url, headers={"User-Agent": _BROWSER_UA})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+    except Exception:
+        return None
+
+    title_match = (
+        re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)', html, re.IGNORECASE)
+        or re.search(r"<title[^>]*>([^<]+)</title>", html, re.IGNORECASE)
+    )
+    title = title_match.group(1).strip() if title_match else url
+
+    text = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", html)
+    text = re.sub(r"(?s)<[^>]+>", " ", text)
+    text = re.sub(r"&nbsp;|&amp;|&quot;|&#39;", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+
+    if len(text) < 200:
+        return None  # page likely didn't render real content (JS-only site, block page, etc.)
+
+    domain = urllib.parse.urlparse(url).netloc.replace("www.", "")
+    return {"title": title, "url": url, "source": domain, "summary": text[:2500]}
+
+
+async def cmd_post(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """'Напиши пост': give it a link, get back a ready Zerocoder post per the checklist."""
+    text = _extract_target_text(update, context)
+    if not text:
+        await update.message.reply_text(
+            "Пришли ссылку на статью: /post <ссылка>, или ответь этой командой на сообщение со ссылкой."
+        )
+        return
+
+    url_match = re.search(r"https?://\S+", text)
+    if not url_match:
+        await update.message.reply_text("Не нашла ссылку в тексте.")
+        return
+
+    status = await update.message.reply_text("Читаю статью и пишу пост…")
+    article = fetch_url_article(url_match.group(0))
+    if not article:
+        await status.edit_text(
+            "Не получилось прочитать статью по ссылке — сайт заблокировал доступ или не отдал текст "
+            "(частый случай для сайтов на JS без серверного рендеринга)."
+        )
+        return
+
+    post = generate_post(article)
+    await status.delete()
+    await update.message.reply_html(post, disable_web_page_preview=False)
 
 
 def _extract_target_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> str | None:
@@ -411,7 +565,10 @@ async def post_init(app: Application) -> None:
     await app.bot.set_my_commands([
         BotCommand("news2",   "🔥 Горячее за последние 2 часа"),
         BotCommand("news24",  "📰 Лучшее за сутки"),
-        BotCommand("news7",   "📅 Главное за неделю"),
+        BotCommand("news7",   "📅 Главное за неделю (готовые посты)"),
+        BotCommand("list7",   "📋 Список новостей за неделю по источникам"),
+        BotCommand("reddit",  "👽 Интересные ветки с Reddit"),
+        BotCommand("post",    "📝 Пост по ссылке на статью"),
         BotCommand("rewrite", "✍️ Переписать текст под tone of voice"),
         BotCommand("reply",   "💬 Ответ комьюнити-менеджера на комментарий"),
     ])
@@ -427,6 +584,9 @@ def main() -> None:
     app.add_handler(CommandHandler("news2", cmd_news2))
     app.add_handler(CommandHandler("news24", cmd_news24))
     app.add_handler(CommandHandler("news7", cmd_news7))
+    app.add_handler(CommandHandler("list7", cmd_list7))
+    app.add_handler(CommandHandler("reddit", cmd_reddit))
+    app.add_handler(CommandHandler("post", cmd_post))
     app.add_handler(CommandHandler("rewrite", cmd_rewrite))
     app.add_handler(CommandHandler("reply", cmd_reply))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_plain_text))

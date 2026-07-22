@@ -4,6 +4,7 @@
 import json
 import os
 import re
+import socket
 import sys
 import urllib.request
 import feedparser
@@ -16,6 +17,11 @@ from rich import box
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# feedparser.parse() has no built-in timeout — a single unresponsive RSS
+# source can hang the whole fetch for minutes. This caps every socket
+# operation in the process (urllib, feedparser) at 10s.
+socket.setdefaulttimeout(10)
 
 FEEDS = [
     {"name": "Zerocoder",  "url": "https://ya.zerocoder.ru/feed/"},
