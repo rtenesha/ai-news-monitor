@@ -3,7 +3,13 @@
 keyless sources, full-text extraction, structured AI scoring, and
 deduplication. See docs/superpowers/specs/2026-07-22-news-pipeline-design.md."""
 
+import json
+import re
+from typing import Optional
 from urllib.parse import urlsplit, parse_qsl, urlencode, urlunsplit
+
+from pydantic import BaseModel, Field, ValidationError
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 _TRACKING_QUERY_PARAMS = {
     "fbclid", "gclid", "dclid", "igshid", "mc_cid", "mc_eid", "msclkid",
@@ -50,3 +56,70 @@ def dedup_cross_source(articles: list[dict]) -> list[dict]:
             primary["source"] = " + ".join(sorted(names))
         merged.append(primary)
     return merged
+
+
+class AnalysisResult(BaseModel):
+    score: int = Field(ge=0, le=5)
+    reason: str
+    summary: str
+
+
+def _parse_analysis_json(raw: str) -> Optional[AnalysisResult]:
+    """Extract and validate a {score, reason, summary} JSON object from a
+    raw model response, tolerating ```json fences or surrounding prose."""
+    match = re.search(r"\{.*\}", raw, re.DOTALL)
+    if not match:
+        return None
+    try:
+        data = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return None
+    try:
+        return AnalysisResult.model_validate(data)
+    except ValidationError:
+        return None
+
+
+_ANALYSIS_SYSTEM_PROMPT = (
+    "Ты пишешь исключительно на русском языке. Никаких китайских, японских "
+    "или других иероглифов — только кириллица, латиница в именах собственных и цифры. "
+    "Отвечай СТРОГО одним JSON-объектом, без пояснений и markdown-разметки."
+)
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
+def _call_analysis_model(client, article: dict, full_text: Optional[str]) -> str:
+    content = full_text or article["summary"]
+    prompt = (
+        "Ты — опытный русскоязычный редактор Telegram-канала об ИИ и вайбкодинге.\n\n"
+        "Оцени статью по релевантности для аудитории, которой интересны:\n"
+        "— новые ИИ-инструменты и нейросети\n"
+        "— вайбкодинг и автоматизация с помощью ИИ\n"
+        "— практические кейсы применения ИИ, скилы, промты, MCP, лайфхаки\n\n"
+        "Ответь строго одним JSON-объектом вида:\n"
+        '{"score": <целое 0-5>, "reason": "<почему такая оценка, коротко>", '
+        '"summary": "<одно законченное предложение на живом русском языке — суть новости>"}\n\n'
+        f"Источник: {article['source']}\n"
+        f"Заголовок: {article['title']}\n"
+        f"Содержание: {content[:3000]}"
+    )
+    response = client.chat.completions.create(
+        model="llama-3.3-70b-versatile",
+        messages=[
+            {"role": "system", "content": _ANALYSIS_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        max_tokens=400,
+    )
+    return response.choices[0].message.content
+
+
+def score_article_ai(article: dict, groq_client, full_text: Optional[str] = None) -> Optional[AnalysisResult]:
+    """Score one article with structured AI output (0-5 + reason + one-line
+    summary). Returns None if the call or parsing failed after retries —
+    callers must fall back to keyword scoring."""
+    try:
+        raw = _call_analysis_model(groq_client, article, full_text)
+    except Exception:
+        return None
+    return _parse_analysis_json(raw)

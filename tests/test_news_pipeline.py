@@ -39,3 +39,33 @@ def test_dedup_cross_source_keeps_distinct_urls():
     ]
     result = dedup_cross_source(articles)
     assert len(result) == 2
+
+
+from news_pipeline import AnalysisResult, _parse_analysis_json
+
+
+def test_parse_analysis_json_valid():
+    raw = '{"score": 4, "reason": "важный релиз", "summary": "OpenAI выпустила новую модель."}'
+    result = _parse_analysis_json(raw)
+    assert result == AnalysisResult(score=4, reason="важный релиз", summary="OpenAI выпустила новую модель.")
+
+
+def test_parse_analysis_json_handles_markdown_fence_and_prose():
+    raw = 'Вот оценка:\n```json\n{"score": 2, "reason": "so-so", "summary": "Что-то произошло."}\n```'
+    result = _parse_analysis_json(raw)
+    assert result is not None
+    assert result.score == 2
+
+
+def test_parse_analysis_json_invalid_json_returns_none():
+    assert _parse_analysis_json("не могу оценить эту статью") is None
+
+
+def test_parse_analysis_json_out_of_range_score_returns_none():
+    raw = '{"score": 9, "reason": "x", "summary": "y"}'
+    assert _parse_analysis_json(raw) is None
+
+
+def test_parse_analysis_json_missing_field_returns_none():
+    raw = '{"score": 3, "summary": "y"}'
+    assert _parse_analysis_json(raw) is None
