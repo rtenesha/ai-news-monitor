@@ -151,7 +151,7 @@ def test_apply_duplicate_groups_keeps_highest_score():
     assert result == [{"title": "B", "score": 5}, {"title": "C", "score": 1}]
 
 
-from news_pipeline import _hn_story_to_article, _github_trending_period, _google_news_time_operator
+from news_pipeline import _hn_story_to_article, _github_trending_period, _google_news_time_operator, fetch_hackernews, fetch_github_trending
 
 
 def test_hn_story_to_article_maps_fields():
@@ -187,3 +187,141 @@ def test_google_news_time_operator_short_window():
 def test_google_news_time_operator_long_window():
     op = _google_news_time_operator(168)
     assert op.startswith("after:")
+
+
+def test_hn_story_to_article_raises_on_missing_id():
+    """Verify that _hn_story_to_article raises KeyError when 'id' field is missing.
+    This tests that the per-item guard in fetch_hackernews is necessary."""
+    story = {"title": "Story without ID", "score": 200}
+    try:
+        _hn_story_to_article(story)
+        assert False, "Expected KeyError for missing 'id' field"
+    except KeyError:
+        pass  # Expected
+
+
+def test_fetch_hackernews_skips_malformed_stories():
+    """Verify that fetch_hackernews continues collecting articles even when
+    one story object is missing the 'id' field (finding #1)."""
+    from unittest.mock import patch
+    import json
+
+    # Mock API responses: first request returns top story IDs (1, 2, 3),
+    # then individual story fetches: story 1 has no 'id', stories 2 and 3 are valid.
+    responses = [
+        json.dumps([1, 2, 3]).encode(),  # topstories response
+        json.dumps({"title": "Story 1", "score": 200}).encode(),  # story 1: missing 'id'
+        json.dumps({"id": 2, "title": "Valid story 2", "score": 150}).encode(),  # story 2: valid
+        json.dumps({"id": 3, "title": "Valid story 3", "score": 200}).encode(),  # story 3: valid
+    ]
+    response_iter = iter(responses)
+
+    def mock_urlopen(url, timeout=10):
+        from io import BytesIO
+        from unittest.mock import MagicMock
+        response = MagicMock()
+        response.__enter__ = lambda self: self
+        response.__exit__ = lambda self, *args: None
+        response.read = lambda: next(response_iter)
+        return response
+
+    with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+        articles = fetch_hackernews(hours=24, min_score=100)
+    # Should have 2 articles (stories 2 and 3), not 0 or crash
+    assert len(articles) == 2
+    assert articles[0]["title"] == "Valid story 2"
+    assert articles[1]["title"] == "Valid story 3"
+
+
+def test_fetch_hackernews_skips_invalid_timestamp():
+    """Verify that fetch_hackernews continues when a story has a non-numeric timestamp."""
+    from unittest.mock import patch
+    import json
+    from datetime import datetime, timezone, timedelta
+
+    # Use a recent timestamp to ensure it passes the cutoff filter
+    recent_timestamp = int(datetime.now(timezone.utc).timestamp())
+
+    responses = [
+        json.dumps([1, 2]).encode(),  # topstories
+        json.dumps({"id": 1, "title": "Story 1", "score": 200, "time": "not-a-number"}).encode(),  # invalid time
+        json.dumps({"id": 2, "title": "Story 2", "score": 200, "time": recent_timestamp}).encode(),  # valid
+    ]
+    response_iter = iter(responses)
+
+    def mock_urlopen(url, timeout=10):
+        from unittest.mock import MagicMock
+        response = MagicMock()
+        response.__enter__ = lambda self: self
+        response.__exit__ = lambda self, *args: None
+        response.read = lambda: next(response_iter)
+        return response
+
+    with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+        articles = fetch_hackernews(hours=24, min_score=100)
+    # Should have at least 1 article (story 2), not 0 or crash
+    assert len(articles) >= 1
+    assert any(a["title"] == "Story 2" for a in articles)
+
+
+def test_fetch_github_trending_handles_non_dict_payload():
+    """Verify that fetch_github_trending skips a language when the API returns
+    non-dict JSON (e.g., null, list), instead of crashing (finding #3)."""
+    from unittest.mock import patch
+    import json
+
+    responses = [
+        b"null",  # Python: returns list - non-dict JSON
+        json.dumps({"data": {"rows": [{"repo_name": "python/cpython", "stars": 50, "description": "Python"}]}}).encode(),  # TypeScript: valid
+    ]
+    response_iter = iter(responses)
+
+    def mock_urlopen(url, timeout=15):
+        from unittest.mock import MagicMock
+        response = MagicMock()
+        response.__enter__ = lambda self: self
+        response.__exit__ = lambda self, *args: None
+        response.read = lambda: next(response_iter)
+        return response
+
+    with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+        articles = fetch_github_trending(hours=24, languages=["Python", "TypeScript"], min_stars=5)
+    # Should have 1 article from TypeScript language, not crash from null payload
+    assert len(articles) == 1
+    assert articles[0]["title"] == "python/cpython (+50⭐)"
+
+
+def test_fetch_github_trending_skips_malformed_rows():
+    """Verify that fetch_github_trending skips a malformed row (non-dict) and
+    continues with other rows (finding #4)."""
+    from unittest.mock import patch
+    import json
+
+    # Mock response: rows list contains a non-dict value and then valid rows
+    responses = [
+        json.dumps({
+            "data": {
+                "rows": [
+                    "not-a-dict",  # malformed row
+                    {"repo_name": "repo/one", "stars": 10, "description": "First"},
+                    {"repo_name": "repo/two", "stars": 20, "description": "Second"},
+                ]
+            }
+        }).encode(),
+    ]
+    response_iter = iter(responses)
+
+    def mock_urlopen(url, timeout=15):
+        from unittest.mock import MagicMock
+        response = MagicMock()
+        response.__enter__ = lambda self: self
+        response.__exit__ = lambda self, *args: None
+        response.read = lambda: next(response_iter)
+        return response
+
+    with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+        articles = fetch_github_trending(hours=24, languages=["Python"], min_stars=5)
+    # Should have 2 articles (skipping the non-dict row), not 0 or crash
+    assert len(articles) == 2
+    assert articles[0]["title"] == "repo/one (+10⭐)"
+    assert articles[1]["title"] == "repo/two (+20⭐)"

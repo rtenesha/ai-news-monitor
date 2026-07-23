@@ -273,16 +273,16 @@ def fetch_hackernews(hours: int = 24, min_score: int = 100, fetch_top: int = 30)
         try:
             with urllib.request.urlopen(f"{base}/item/{story_id}.json", timeout=10) as resp:
                 story = json.loads(resp.read())
+            if not story or story.get("score", 0) < min_score:
+                continue
+            story_time = story.get("time")
+            if story_time and datetime.fromtimestamp(story_time, tz=timezone.utc) < cutoff:
+                continue
+            article = _hn_story_to_article(story)
+            if article:
+                articles.append(article)
         except Exception:
             continue
-        if not story or story.get("score", 0) < min_score:
-            continue
-        story_time = story.get("time")
-        if story_time and datetime.fromtimestamp(story_time, tz=timezone.utc) < cutoff:
-            continue
-        article = _hn_story_to_article(story)
-        if article:
-            articles.append(article)
     return articles
 
 
@@ -306,22 +306,25 @@ def fetch_github_trending(hours: int = 24, languages: Optional[list] = None, min
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 payload = json.loads(resp.read())
+            rows = (payload.get("data") or {}).get("rows") or []
         except Exception:
             continue
-        rows = (payload.get("data") or {}).get("rows") or []
         for row in rows:
-            repo = row.get("repo_name")
-            stars = _safe_int(row.get("stars"))
-            if not repo or stars < min_stars:
+            try:
+                repo = row.get("repo_name")
+                stars = _safe_int(row.get("stars"))
+                if not repo or stars < min_stars:
+                    continue
+                description = (row.get("description") or "").strip()
+                articles.append({
+                    "title": f"{repo} (+{stars}⭐)",
+                    "url": f"https://github.com/{repo}",
+                    "summary": description[:600],
+                    "source": "GitHub Trending",
+                    "published": None,
+                })
+            except Exception:
                 continue
-            description = (row.get("description") or "").strip()
-            articles.append({
-                "title": f"{repo} (+{stars}⭐)",
-                "url": f"https://github.com/{repo}",
-                "summary": description[:600],
-                "source": "GitHub Trending",
-                "published": None,
-            })
     return articles
 
 
