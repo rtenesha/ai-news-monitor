@@ -160,6 +160,8 @@ def _parse_duplicate_groups(raw: str, n_items: int) -> list[list[int]]:
     """Extract and validate duplicate groups from AI response JSON.
     Returns list of valid groups (each with >= 2 valid indices), or empty list
     if parsing fails or no valid groups found."""
+    if not isinstance(raw, str):
+        return []
     match = re.search(r"\{.*\}", raw, re.DOTALL)
     if not match:
         return []
@@ -195,20 +197,20 @@ def dedup_semantic(articles: list[dict], groq_client) -> list[dict]:
     if len(articles) <= 1:
         return articles
 
-    numbered = "\n\n".join(
-        f"[{i}] {a['title']}\n{a.get('verdict') or a.get('summary', '')[:200]}"
-        for i, a in enumerate(articles)
-    )
-    prompt = (
-        "Ниже пронумерованный список новостей. Найди группы, где несколько "
-        "пунктов рассказывают об одном и том же событии (просто с разных сайтов). "
-        "Ответь строго одним JSON-объектом:\n"
-        '{"duplicates": [[i, j, ...], ...]}\n'
-        "Каждая группа — индексы (начиная с 0) новостей об одном и том же событии, "
-        'минимум 2 индекса. Если дублей нет — верни {"duplicates": []}.\n\n'
-        f"{numbered}"
-    )
     try:
+        numbered = "\n\n".join(
+            f"[{i}] {a['title']}\n{a.get('verdict') or a.get('summary', '')[:200]}"
+            for i, a in enumerate(articles)
+        )
+        prompt = (
+            "Ниже пронумерованный список новостей. Найди группы, где несколько "
+            "пунктов рассказывают об одном и том же событии (просто с разных сайтов). "
+            "Ответь строго одним JSON-объектом:\n"
+            '{"duplicates": [[i, j, ...], ...]}\n'
+            "Каждая группа — индексы (начиная с 0) новостей об одном и том же событии, "
+            'минимум 2 индекса. Если дублей нет — верни {"duplicates": []}.\n\n'
+            f"{numbered}"
+        )
         response = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
@@ -218,10 +220,10 @@ def dedup_semantic(articles: list[dict], groq_client) -> list[dict]:
             max_tokens=500,
         )
         raw = response.choices[0].message.content
+
+        groups = _parse_duplicate_groups(raw, len(articles))
+        if not groups:
+            return articles
+        return _apply_duplicate_groups(articles, groups)
     except Exception:
         return articles
-
-    groups = _parse_duplicate_groups(raw, len(articles))
-    if not groups:
-        return articles
-    return _apply_duplicate_groups(articles, groups)

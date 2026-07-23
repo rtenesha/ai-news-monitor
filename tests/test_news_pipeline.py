@@ -135,6 +135,12 @@ def test_parse_duplicate_groups_invalid_json_returns_empty():
     assert _parse_duplicate_groups("не могу разобрать", n_items=3) == []
 
 
+def test_parse_duplicate_groups_none_input_returns_empty():
+    """Verify that _parse_duplicate_groups handles None gracefully when Groq
+    returns content=None, matching _parse_analysis_json's guard pattern."""
+    assert _parse_duplicate_groups(None, n_items=3) == []
+
+
 def test_apply_duplicate_groups_keeps_highest_score():
     articles = [
         {"title": "A", "score": 3},
