@@ -113,6 +113,24 @@ def test_extract_from_html_returns_none_when_trafilatura_raises():
         assert result is None
 
 
+from news_pipeline import extract_full_text
+
+
+def test_extract_full_text_returns_none_on_empty_url():
+    """Verify that extract_full_text handles empty/malformed URLs gracefully and
+    returns None instead of raising ValueError from urllib.request.Request().
+    This directly covers the fix to move Request() construction inside the try block."""
+    result = extract_full_text("")
+    assert result is None
+
+
+def test_extract_full_text_returns_none_on_malformed_url():
+    """Verify that extract_full_text handles scheme-less URLs gracefully and
+    returns None instead of raising ValueError."""
+    result = extract_full_text("not-a-valid-url")
+    assert result is None
+
+
 from news_pipeline import _parse_duplicate_groups, _apply_duplicate_groups
 
 

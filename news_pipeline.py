@@ -150,8 +150,8 @@ def extract_full_text(url: str) -> Optional[str]:
     """Fetch `url` and extract the article body via trafilatura. Returns
     None on any failure (network error, blocked page, too-short
     extraction) — callers must fall back to the RSS summary."""
-    req = urllib.request.Request(url, headers={"User-Agent": _BROWSER_UA})
     try:
+        req = urllib.request.Request(url, headers={"User-Agent": _BROWSER_UA})
         with urllib.request.urlopen(req, timeout=15) as resp:
             html = resp.read().decode("utf-8", errors="ignore")
     except Exception:
