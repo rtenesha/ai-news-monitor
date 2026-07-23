@@ -134,7 +134,10 @@ _BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHT
 
 
 def _extract_from_html(html: str) -> Optional[str]:
-    text = trafilatura.extract(html, favor_recall=True)
+    try:
+        text = trafilatura.extract(html, favor_recall=True)
+    except Exception:
+        return None
     if not text or len(text) < 200:
         return None
     return text

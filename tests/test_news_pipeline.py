@@ -101,3 +101,13 @@ def test_extract_from_html_returns_article_body():
 
 def test_extract_from_html_returns_none_for_thin_content():
     assert _extract_from_html(_THIN_HTML) is None
+
+
+def test_extract_from_html_returns_none_when_trafilatura_raises():
+    """Verify that _extract_from_html catches trafilatura exceptions and
+    returns None instead of propagating, honoring the 'never raise' contract."""
+    from unittest.mock import patch
+    with patch("trafilatura.extract") as mock_extract:
+        mock_extract.side_effect = RuntimeError("malformed HTML causes parser crash")
+        result = _extract_from_html("<html>garbage</html>")
+        assert result is None
