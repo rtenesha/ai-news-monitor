@@ -19,14 +19,26 @@ from telegram import Update, BotCommand
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from dotenv import load_dotenv
 
-from monitor import FEEDS, fetch_articles, filter_by_keywords
+from monitor import FEEDS, fetch_articles, filter_by_keywords, GOOGLE_NEWS_QUERIES
 from notifier import score_article, generate_post, _NATURAL_TEXT_RULES
+import news_pipeline
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
 GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 MSK = timezone(timedelta(hours=3))
+
+_CANDIDATE_CAP = {2: 10, 24: 15, 168: 20}
+
+
+def _format_brief(article: dict) -> str:
+    verdict = article.get("verdict") or article["title"]
+    return (
+        f'<b>{article["title"]}</b>\n'
+        f'{verdict}\n'
+        f'<i>{article["source"]}</i> · <a href="{article["url"]}">Читать →</a>'
+    )
 
 # label, lo знаков, hi знаков, задача этапа, пример нужного уровня краткости
 _STAGES = {
@@ -321,11 +333,13 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Привет! Я работаю только по запросу — ничего не шлю сама.\n\n"
         "Новости:\n"
-        "/news2 — горячее за последние 2 часа, готовые посты\n"
-        "/news24 — лучшее за сутки, готовые посты\n"
-        "/news7 — главное за неделю, готовые посты\n"
+        "/news2 — горячее за последние 2 часа, заголовок + короткое описание\n"
+        "/news24 — лучшее за сутки, заголовок + короткое описание\n"
+        "/news7 — главное за неделю, заголовок + короткое описание\n"
         "/list7 — быстрый список за неделю по каждому источнику отдельно (заголовок + ссылка, без ИИ)\n"
-        "/reddit — интересные ветки из AI-сабреддитов, уже в виде готовых постов\n\n"
+        "/reddit — интересные ветки из AI-сабреддитов, заголовок + короткое описание\n\n"
+        "Понравилась новость из обзора — скопируй её ссылку и вызови /post <ссылка>, "
+        "получишь готовый пост.\n\n"
         "Из ссылки — сразу пост:\n"
         "/post <ссылка> — скинь ссылку на любую статью, я прочитаю её и напишу пост для Zerocoder "
         "по нашему чек-листу (3 заголовка + факты + 3 CTA)\n\n"
@@ -342,29 +356,47 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def _send_posts(update: Update, hours: int) -> None:
     period = {2: "2 часа", 24: "24 часа", 168: "7 дней"}[hours]
-    # Лимит на количество постов чтобы не спамить
     limit = {2: 5, 24: 7, 168: 10}[hours]
 
     status = await update.message.reply_text(f"Ищу новости за {period}…")
 
     articles = fetch_articles(hours)
+    articles += news_pipeline.fetch_hackernews(hours=hours)
+    articles += news_pipeline.fetch_github_trending(hours=hours)
+    articles += news_pipeline.fetch_google_news(GOOGLE_NEWS_QUERIES, hours=hours)
+    articles = news_pipeline.dedup_cross_source(articles)
     relevant = filter_by_keywords(articles)
-    hot = sorted(
-        [a for a in relevant if score_article(a) >= 2],
-        key=lambda a: score_article(a),
-        reverse=True,
-    )[:limit]
+    candidates = sorted(relevant, key=score_article, reverse=True)[:_CANDIDATE_CAP[hours]]
+
+    if not candidates:
+        await status.edit_text(f"За последние {period} ничего горячего не нашлось.")
+        return
+
+    await status.edit_text(f"Оцениваю {len(candidates)} материалов…")
+    client = _groq_client()
+    if client:
+        for a in candidates:
+            full_text = news_pipeline.extract_full_text(a["url"])
+            result = news_pipeline.score_article_ai(a, client, full_text=full_text)
+            if result:
+                a["score"] = result.score
+                a["verdict"] = result.summary
+            else:
+                a["score"] = score_article(a)
+        candidates = news_pipeline.dedup_semantic(candidates, client)
+    else:
+        for a in candidates:
+            a["score"] = score_article(a)
+
+    hot = sorted([a for a in candidates if a["score"] >= 2], key=lambda a: a["score"], reverse=True)[:limit]
 
     if not hot:
         await status.edit_text(f"За последние {period} ничего горячего не нашлось.")
         return
 
-    await status.edit_text(f"Нашла {len(hot)} материалов, генерирую посты…")
-
+    await status.edit_text(f"Нашла {len(hot)} материалов:")
     for article in hot:
-        post = generate_post(article)
-        await update.message.reply_html(post, disable_web_page_preview=False)
-
+        await update.message.reply_html(_format_brief(article), disable_web_page_preview=True)
     await status.delete()
 
 
@@ -430,10 +462,15 @@ async def cmd_reddit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await status.edit_text("Не нашла ничего интересного на Reddit прямо сейчас.")
         return
 
-    await status.edit_text(f"Нашла {len(picked)} веток, генерирую посты…")
+    await status.edit_text(f"Нашла {len(picked)} веток, готовлю описания…")
+    client = _groq_client()
     for t in picked:
-        post = generate_post(t)
-        await update.message.reply_html(post, disable_web_page_preview=False)
+        if client:
+            full_text = news_pipeline.extract_full_text(t["url"])
+            result = news_pipeline.score_article_ai(t, client, full_text=full_text)
+            if result:
+                t["verdict"] = result.summary
+        await update.message.reply_html(_format_brief(t), disable_web_page_preview=True)
     await status.delete()
 
 
@@ -563,11 +600,11 @@ async def on_plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def post_init(app: Application) -> None:
     await app.bot.set_my_commands([
-        BotCommand("news2",   "🔥 Горячее за последние 2 часа"),
-        BotCommand("news24",  "📰 Лучшее за сутки"),
-        BotCommand("news7",   "📅 Главное за неделю (готовые посты)"),
+        BotCommand("news2",   "🔥 Горячее за последние 2 часа (кратко)"),
+        BotCommand("news24",  "📰 Лучшее за сутки (кратко)"),
+        BotCommand("news7",   "📅 Главное за неделю (кратко)"),
         BotCommand("list7",   "📋 Список новостей за неделю по источникам"),
-        BotCommand("reddit",  "👽 Интересные ветки с Reddit"),
+        BotCommand("reddit",  "👽 Интересные ветки с Reddit (кратко)"),
         BotCommand("post",    "📝 Пост по ссылке на статью"),
         BotCommand("rewrite", "✍️ Переписать текст под tone of voice"),
         BotCommand("reply",   "💬 Ответ комьюнити-менеджера на комментарий"),
