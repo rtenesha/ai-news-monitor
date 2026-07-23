@@ -5,13 +5,16 @@ deduplication. See docs/superpowers/specs/2026-07-22-news-pipeline-design.md."""
 
 import json
 import re
+import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import urlsplit, parse_qsl, urlencode, urlunsplit
 
 from pydantic import BaseModel, Field, ValidationError
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+import feedparser
 import trafilatura
 
 _TRACKING_QUERY_PARAMS = {
@@ -227,3 +230,135 @@ def dedup_semantic(articles: list[dict], groq_client) -> list[dict]:
         return _apply_duplicate_groups(articles, groups)
     except Exception:
         return articles
+
+
+def _safe_int(value) -> int:
+    """Safely convert a value to int, returning 0 on any failure."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _hn_story_to_article(story: dict) -> Optional[dict]:
+    """Convert a Hacker News API story object to article dict. Returns None if
+    title is missing."""
+    title = story.get("title")
+    if not title:
+        return None
+    story_id = story["id"]
+    url = story.get("url") or f"https://news.ycombinator.com/item?id={story_id}"
+    return {
+        "title": title,
+        "url": url,
+        "summary": (story.get("text") or "")[:600],
+        "source": "Hacker News",
+        "published": None,
+    }
+
+
+def fetch_hackernews(hours: int = 24, min_score: int = 100, fetch_top: int = 30) -> list[dict]:
+    """Top Hacker News stories via the keyless Firebase API, filtered by
+    minimum score and publish time. Returns [] on any failure."""
+    base = "https://hacker-news.firebaseio.com/v0"
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    try:
+        with urllib.request.urlopen(f"{base}/topstories.json", timeout=10) as resp:
+            story_ids = json.loads(resp.read())[:fetch_top]
+    except Exception:
+        return []
+
+    articles = []
+    for story_id in story_ids:
+        try:
+            with urllib.request.urlopen(f"{base}/item/{story_id}.json", timeout=10) as resp:
+                story = json.loads(resp.read())
+        except Exception:
+            continue
+        if not story or story.get("score", 0) < min_score:
+            continue
+        story_time = story.get("time")
+        if story_time and datetime.fromtimestamp(story_time, tz=timezone.utc) < cutoff:
+            continue
+        article = _hn_story_to_article(story)
+        if article:
+            articles.append(article)
+    return articles
+
+
+def _github_trending_period(hours: int) -> str:
+    """Map hours window to GitHub/OSS Insight trending period."""
+    return "past_24_hours" if hours <= 24 else "past_28_days"
+
+
+def fetch_github_trending(hours: int = 24, languages: Optional[list] = None, min_stars: int = 5) -> list[dict]:
+    """Trending GitHub repos via the keyless OSS Insight API. Returns []
+    entries for languages that fail; never raises."""
+    languages = languages or ["Python", "TypeScript", "All"]
+    period = _github_trending_period(hours)
+    articles = []
+    for lang in languages:
+        params = urllib.parse.urlencode({"period": period, "language": lang})
+        req = urllib.request.Request(
+            f"https://api.ossinsight.io/v1/trends/repos?{params}",
+            headers={"Accept": "application/json", "User-Agent": "Zerocoder-News-Bot/1.0"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                payload = json.loads(resp.read())
+        except Exception:
+            continue
+        rows = (payload.get("data") or {}).get("rows") or []
+        for row in rows:
+            repo = row.get("repo_name")
+            stars = _safe_int(row.get("stars"))
+            if not repo or stars < min_stars:
+                continue
+            description = (row.get("description") or "").strip()
+            articles.append({
+                "title": f"{repo} (+{stars}⭐)",
+                "url": f"https://github.com/{repo}",
+                "summary": description[:600],
+                "source": "GitHub Trending",
+                "published": None,
+            })
+    return articles
+
+
+def _google_news_time_operator(hours: int) -> str:
+    """Generate Google News search time operator based on hours window."""
+    if hours <= 100:
+        return f"when:{hours}h"
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    return f"after:{since.strftime('%Y-%m-%d')}"
+
+
+def fetch_google_news(queries: list[str], hours: int = 24) -> list[dict]:
+    """Google News RSS search for each query in `queries`. Keyless. Skips
+    queries that fail; never raises."""
+    operator = _google_news_time_operator(hours)
+    articles = []
+    for query in queries:
+        params = urllib.parse.urlencode({
+            "q": f"{query} {operator}",
+            "hl": "ru", "gl": "RU", "ceid": "RU:ru",
+        })
+        try:
+            feed = feedparser.parse(f"https://news.google.com/rss/search?{params}")
+        except Exception:
+            continue
+        for entry in feed.entries:
+            title = entry.get("title", "")
+            link = entry.get("link", "")
+            if not title or not link:
+                continue
+            summary = entry.get("summary", entry.get("description", ""))
+            summary = re.sub(r"<[^>]+>", " ", summary)
+            articles.append({
+                "title": title,
+                "url": link,
+                "summary": re.sub(r"\s+", " ", summary).strip()[:600],
+                "source": f"Google News: {query}",
+                "published": None,
+            })
+    return articles

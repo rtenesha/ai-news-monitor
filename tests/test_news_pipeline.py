@@ -149,3 +149,41 @@ def test_apply_duplicate_groups_keeps_highest_score():
     ]
     result = _apply_duplicate_groups(articles, [[0, 1]])
     assert result == [{"title": "B", "score": 5}, {"title": "C", "score": 1}]
+
+
+from news_pipeline import _hn_story_to_article, _github_trending_period, _google_news_time_operator
+
+
+def test_hn_story_to_article_maps_fields():
+    story = {"id": 123, "title": "Show HN: cool AI tool", "score": 250, "text": "details here"}
+    article = _hn_story_to_article(story)
+    assert article["title"] == "Show HN: cool AI tool"
+    assert article["url"] == "https://news.ycombinator.com/item?id=123"
+    assert article["source"] == "Hacker News"
+
+
+def test_hn_story_to_article_prefers_external_url():
+    story = {"id": 123, "title": "External link story", "score": 250, "url": "https://example.com/post"}
+    article = _hn_story_to_article(story)
+    assert article["url"] == "https://example.com/post"
+
+
+def test_hn_story_to_article_skips_missing_title():
+    assert _hn_story_to_article({"id": 1, "score": 200}) is None
+
+
+def test_github_trending_period_short_window():
+    assert _github_trending_period(24) == "past_24_hours"
+
+
+def test_github_trending_period_long_window():
+    assert _github_trending_period(168) == "past_28_days"
+
+
+def test_google_news_time_operator_short_window():
+    assert _google_news_time_operator(24) == "when:24h"
+
+
+def test_google_news_time_operator_long_window():
+    op = _google_news_time_operator(168)
+    assert op.startswith("after:")
