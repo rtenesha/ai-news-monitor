@@ -16,6 +16,8 @@ from rich.table import Table
 from rich import box
 from dotenv import load_dotenv
 
+import news_pipeline
+
 load_dotenv()
 
 # feedparser.parse() has no built-in timeout — a single unresponsive RSS
@@ -54,12 +56,22 @@ KEYWORDS = [
     "Microsoft AI", "Llama", "Mistral", "Grok", "xAI",
     "WWDC", "GPT-4", "GPT-5", "Copilot", "neural network",
     "вайбкодинг", "vibe coding", "vibecoding",
+    "skill", "скил", "скилы", "agent skills",
+    "prompt", "промпт", "промты",
+    "mcp",
+    "lifehack", "лайфхак", "лайфхаки",
 ]
 
 HIGH_VALUE = {"chatgpt", "claude", "gpt", "llm", "gemini", "midjourney",
               "no-code", "nocode", "нейросеть", "нейросети", "автоматизация", "agent",
               "openai", "anthropic", "llama", "mistral", "grok", "sora", "copilot",
-              "вайбкодинг", "vibe coding", "vibecoding"}
+              "вайбкодинг", "vibe coding", "vibecoding",
+              "skill", "скил", "скилы", "agent skills",
+              "prompt", "промпт", "промты",
+              "mcp",
+              "lifehack", "лайфхак", "лайфхаки"}
+
+GOOGLE_NEWS_QUERIES = ["вайбкодинг", "Claude Code", "AI coding agent"]
 
 console = Console()
 
@@ -129,69 +141,29 @@ def analyze_local(articles: list[dict]) -> list[dict]:
 
 
 def analyze_with_ai(articles: list[dict]) -> tuple[list[dict], bool]:
-    """Rate articles with Groq/Llama 3; falls back to keyword scoring."""
+    """Rate articles with structured per-article Groq scoring (full text
+    when available); falls back to keyword scoring per-article on failure."""
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
         console.print("[dim]Подсказка: добавь GROQ_API_KEY в .env (бесплатно на console.groq.com)[/dim]")
         return analyze_local(articles), False
 
-    numbered = "\n\n".join(
-        f"[{i+1}] {a['source']}: {a['title']}\n{a['summary']}"
-        for i, a in enumerate(articles)
-    )
-    prompt = f"""Ты — опытный русскоязычный редактор Telegram-канала об ИИ и вайбкодинге.
+    client = Groq(api_key=api_key)
+    used_ai = False
+    for a in articles:
+        full_text = news_pipeline.extract_full_text(a["url"])
+        result = news_pipeline.score_article_ai(a, client, full_text=full_text)
+        if result is None:
+            a["score"] = score_article(a)
+            a["verdict"] = a["title"]
+        else:
+            a["score"] = result.score
+            a["verdict"] = result.summary
+            a["reason"] = result.reason
+            used_ai = True
 
-Оцени статьи по релевантности для аудитории, которой интересны:
-— новые ИИ-инструменты и нейросети
-— вайбкодинг и автоматизация с помощью ИИ
-— практические кейсы применения ИИ
-
-Для каждой статьи ответь строго в формате (одна строка):
-[N] SCORE | SUMMARY
-
-Правила:
-- SCORE — целое число от 0 до 5, без звёздочек
-- SUMMARY — одно законченное предложение на живом русском языке: не переводи дословно, передавай суть
-- Никакого канцелярита: «запустил» вместо «осуществил запуск», конкретные глаголы вместо «является»
-- Только русский язык, никакого английского в SUMMARY
-- Пример: [1] 4 | OpenAI запустила ИИ-агента для деловой переписки прямо в приложении Messages.
-
-Статьи:
-{numbered}"""
-
-    try:
-        client = Groq(api_key=api_key)
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": "Ты пишешь исключительно на русском языке. Никаких китайских, японских или других иероглифов — только кириллица, латиница в именах собственных и цифры."},
-                {"role": "user", "content": prompt},
-            ],
-            max_tokens=2048,
-        )
-        raw = response.choices[0].message.content
-        # Parse scores back into articles
-        for line in raw.splitlines():
-            line = line.strip()
-            if not line or not line.startswith("["):
-                continue
-            try:
-                idx = int(line[1:line.index("]")]) - 1
-                rest = line[line.index("]") + 1:].strip().lstrip("|").strip()
-                score_str, _, verdict = rest.partition("|")
-                articles[idx]["score"] = min(5, max(0, int(score_str.strip())))
-                articles[idx]["verdict"] = re.sub(r'[^ -Ѐ-ӿ -➿\U0001F000-\U0001FAFF]', '', verdict).strip()
-            except (ValueError, IndexError):
-                continue
-        # Fill any articles that weren't parsed
-        for a in articles:
-            if "score" not in a:
-                a["score"] = score_article(a)
-                a["verdict"] = a["title"]
-        return articles, True
-    except Exception as e:
-        console.print(f"[yellow]Groq недоступен ({e}), использую авто-скоринг[/yellow]")
-        return analyze_local(articles), False
+    articles = news_pipeline.dedup_semantic(articles, client)
+    return articles, used_ai
 
 
 def format_telegram_message(articles: list[dict], hours: int) -> str:
@@ -275,9 +247,13 @@ def main() -> None:
         border_style="blue",
     ))
 
-    console.print("\n[bold]1. Загружаю RSS-ленты...[/bold]")
+    console.print("\n[bold]1. Загружаю RSS-ленты и другие источники...[/bold]")
     all_articles = fetch_articles(hours)
-    console.print(f"\nВсего найдено: [bold]{len(all_articles)}[/bold] статей")
+    all_articles += news_pipeline.fetch_hackernews(hours=hours)
+    all_articles += news_pipeline.fetch_github_trending(hours=hours)
+    all_articles += news_pipeline.fetch_google_news(GOOGLE_NEWS_QUERIES, hours=hours)
+    all_articles = news_pipeline.dedup_cross_source(all_articles)
+    console.print(f"\nВсего найдено (после дедупа): [bold]{len(all_articles)}[/bold] статей")
 
     console.print("\n[bold]2. Фильтрую по ключевым словам...[/bold]")
     relevant = filter_by_keywords(all_articles)
