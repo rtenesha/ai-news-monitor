@@ -6,6 +6,7 @@ plus /post for turning an arbitrary article link into a ready Zerocoder post."""
 
 from __future__ import annotations
 
+import html
 import os
 import re
 import time
@@ -35,9 +36,9 @@ _CANDIDATE_CAP = {2: 10, 24: 15, 168: 20}
 def _format_brief(article: dict) -> str:
     verdict = article.get("verdict") or article["title"]
     return (
-        f'<b>{article["title"]}</b>\n'
-        f'{verdict}\n'
-        f'<i>{article["source"]}</i> · <a href="{article["url"]}">Читать →</a>'
+        f'<b>{html.escape(article["title"])}</b>\n'
+        f'{html.escape(verdict)}\n'
+        f'<i>{html.escape(article["source"])}</i> · <a href="{article["url"]}">Читать →</a>'
     )
 
 # label, lo знаков, hi знаков, задача этапа, пример нужного уровня краткости

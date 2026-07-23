@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """AI News Notifier — hourly check, sends ready-to-post Zerocoder messages to Telegram."""
 
+import html
 import json
 import os
 import random
@@ -202,8 +203,8 @@ def generate_post(article: dict) -> str:
     """Generate a ready-to-post Zerocoder channel message."""
     api_key = os.getenv("GROQ_API_KEY")
     fallback = (
-        f'<b>{article["title"]}</b>\n\n'
-        f'<i>Источник: {article["source"]}</i>\n\n'
+        f'<b>{html.escape(article["title"])}</b>\n\n'
+        f'<i>Источник: {html.escape(article["source"])}</i>\n\n'
         f'\U0001f517 <a href="{article["url"]}">Читать →</a>'
     )
     if not api_key:
@@ -255,7 +256,7 @@ def generate_post(article: dict) -> str:
         link_label = "\U0001f4ce Оригинальный пост" if is_social else "\U0001f517 Источник"
         link_line = f'{link_label}: {article["url"]}'
 
-        parts = [f"<b>{headline}</b>", link_line]
+        parts = [f"<b>{html.escape(headline)}</b>", link_line]
         if body:
             parts.append(body)
         parts.append(cta)
