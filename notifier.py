@@ -12,6 +12,8 @@ from groq import Groq
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
+import news_pipeline
+
 load_dotenv()
 
 # feedparser.parse() has no built-in timeout — a single unresponsive RSS
@@ -70,12 +72,22 @@ KEYWORDS = [
     "Microsoft AI", "Llama", "Mistral", "Grok", "xAI",
     "WWDC", "GPT-4", "GPT-5", "Copilot", "neural network",
     "вайбкодинг", "vibe coding", "vibecoding",
+    "skill", "скил", "скилы", "agent skills",
+    "prompt", "промпт", "промты",
+    "mcp",
+    "lifehack", "лайфхак", "лайфхаки",
 ]
 
 HIGH_VALUE = {"chatgpt", "claude", "gpt", "llm", "gemini", "midjourney",
               "no-code", "nocode", "нейросеть", "нейросети", "автоматизация", "agent",
               "openai", "anthropic", "llama", "mistral", "grok", "sora", "copilot",
-              "вайбкодинг", "vibe coding", "vibecoding"}
+              "вайбкодинг", "vibe coding", "vibecoding",
+              "skill", "скил", "скилы", "agent skills",
+              "prompt", "промпт", "промты",
+              "mcp",
+              "lifehack", "лайфхак", "лайфхаки"}
+
+GOOGLE_NEWS_QUERIES = ["вайбкодинг", "Claude Code", "AI coding agent"]
 
 
 def fetch_recent(hours: int = 1) -> list[dict]:
@@ -171,7 +183,7 @@ def _engagement_labels(n: int = 3) -> list[str]:
     return random.sample(_ENGAGEMENT_STYLES, k=min(n, len(_ENGAGEMENT_STYLES)))
 
 
-_SECTION_MARKERS = ["ЗАГОЛОВОК1", "ЗАГОЛОВОК2", "ЗАГОЛОВОК3", "ТЕЛО", "CTA1", "CTA2", "CTA3"]
+_SECTION_MARKERS = ["ЗАГОЛОВОК", "ТЕЛО", "CTA"]
 
 
 def _parse_sections(text: str) -> dict[str, str]:
@@ -197,7 +209,7 @@ def generate_post(article: dict) -> str:
     if not api_key:
         return fallback
 
-    cta_labels = _engagement_labels(3)
+    cta_label = _engagement_labels(1)[0]
 
     prompt = (
         "Ты — редактор Telegram-канала Zerocoder об ИИ и вайбкодинге.\n\n"
@@ -205,20 +217,15 @@ def generate_post(article: dict) -> str:
         f"{_CONTENT_FORMULA}\n\n"
         f"{_NATURAL_TEXT_RULES}\n\n"
         "Ответ дай СТРОГО в этом формате, с этими маркерами в начале строки, ничего от себя не добавляй:\n\n"
-        "ЗАГОЛОВОК1: <вариант заголовка — до 10 слов, конкретный неожиданный результат или эффект открытия "
+        "ЗАГОЛОВОК: <заголовок — до 10 слов, конкретный неожиданный результат или эффект открытия "
         "(«так можно было?!»), эмодзи в конце (выбери из: 💡 🚀 🔍 💻 📊 ⚡ 🛠 🌐 🎯 👀 🤯 — не используй 🤖 и 🧠)>\n"
-        "ЗАГОЛОВОК2: <второй вариант, ДРУГАЯ интонация, не перефразировка первого>\n"
-        "ЗАГОЛОВОК3: <третий вариант, ещё одна интонация>\n"
         "ТЕЛО: <3-4 коротких абзаца (1-3 строки каждый), разделённых пустой строкой:\n"
         "  - кто и что сделал, конкретно (имена, компании, инструменты) — обязателен факт, не только мнение\n"
         "  - если в статье есть проблема и то, как её решили — расскажи по шагам, обычными словами\n"
         "  - что это значит для человека, который занимается ИИ или вайбкодингом — конкретный практический вывод\n"
         "  - можно закончить лёгкой деталью или цитатой из статьи с эмодзи, если это к месту>\n"
-        f"CTA1: <концовка в духе «{cta_labels[0]}», одна строка, без нажима>\n"
-        f"CTA2: <концовка в духе «{cta_labels[1]}», ДРУГАЯ интонация, одна строка>\n"
-        f"CTA3: <концовка в духе «{cta_labels[2]}», ещё одна интонация, одна строка>\n\n"
-        "Заголовки между собой и CTA между собой должны различаться по интонации, а не быть перефразировкой "
-        "друг друга. НЕ пиши ссылку и не пиши «Читать далее» — она добавится отдельно кодом.\n\n"
+        f"CTA: <концовка в духе «{cta_label}», одна строка, без нажима>\n\n"
+        "НЕ пиши ссылку и не пиши «Читать далее» — она добавится отдельно кодом.\n\n"
         f"Источник: {article['source']}\n"
         f"Заголовок статьи: {article['title']}\n"
         f"Содержание: {article['summary']}"
@@ -232,35 +239,26 @@ def generate_post(article: dict) -> str:
                 {"role": "system", "content": "Пиши исключительно на русском языке. Никогда не смешивай латиницу и кириллицу в одном слове: 'specialistам' — грубая ошибка, пиши 'специалистам'. Латиница допустима только в именах собственных (OpenAI, Anthropic, ChatGPT) и аббревиатурах (AI, IPO). Пиши живым естественным языком, как для друга, без ИИ-штампов и канцелярита — избегай слов «революционный», «трансформационный», «раскрыть потенциал», «оптимизировать», «инновационный», «прорывной»."},
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=700,
+            max_tokens=500,
             temperature=0.7,
         )
         raw = clean_text(response.choices[0].message.content)
         sections = _parse_sections(raw)
-        headlines = [sections.get(f"ЗАГОЛОВОК{i}", "").strip() for i in (1, 2, 3)]
-        headlines = [h for h in headlines if h]
+        headline = sections.get("ЗАГОЛОВОК", "").strip()
         body = sections.get("ТЕЛО", "").strip()
-        ctas = [sections.get(f"CTA{i}", "").strip() for i in (1, 2, 3)]
-        ctas = [c for c in ctas if c]
+        cta = sections.get("CTA", "").strip()
 
-        if not headlines or not ctas:
+        if not headline or not cta:
             return fallback
 
         is_social = article["source"].startswith("X:")
         link_label = "\U0001f4ce Оригинальный пост" if is_social else "\U0001f517 Источник"
         link_line = f'{link_label}: {article["url"]}'
 
-        headline_block = "Варианты заголовка:\n" + "\n".join(
-            f"{i}. {h}" for i, h in enumerate(headlines, 1)
-        )
-        cta_block = "Варианты CTA:\n" + "\n".join(
-            f"{i}. {c}" for i, c in enumerate(ctas, 1)
-        )
-
-        parts = [headline_block, link_line]
+        parts = [f"<b>{headline}</b>", link_line]
         if body:
             parts.append(body)
-        parts.append(cta_block)
+        parts.append(cta)
         return "\n\n".join(parts)
     except Exception:
         return fallback
@@ -294,7 +292,11 @@ def main():
     sent_urls = load_sent_urls()
 
     articles = fetch_recent(hours=24)
-    # Дедупликация по URL + фильтр уже отправленных
+    articles += news_pipeline.fetch_hackernews(hours=24)
+    articles += news_pipeline.fetch_github_trending(hours=24)
+    articles += news_pipeline.fetch_google_news(GOOGLE_NEWS_QUERIES, hours=24)
+    articles = news_pipeline.dedup_cross_source(articles)
+
     seen: set[str] = set()
     unique = []
     for a in articles:
@@ -306,12 +308,28 @@ def main():
         a for a in unique
         if any(_kw_matches(kw, (a["title"] + " " + a["summary"]).lower()) for kw in KEYWORDS)
     ]
-    hot = [a for a in relevant if score_article(a) >= 2]
+    # Cap the expensive full-text+AI pass to the top keyword-scored candidates.
+    candidates = sorted(relevant, key=score_article, reverse=True)[:15]
 
-    # Максимум 7 постов за один запуск чтобы не спамить
-    hot = sorted(hot, key=lambda a: score_article(a), reverse=True)[:7]
+    api_key = os.getenv("GROQ_API_KEY")
+    if api_key:
+        client = Groq(api_key=api_key)
+        for a in candidates:
+            full_text = news_pipeline.extract_full_text(a["url"])
+            result = news_pipeline.score_article_ai(a, client, full_text=full_text)
+            if result:
+                a["score"] = result.score
+                a["verdict"] = result.summary
+            else:
+                a["score"] = score_article(a)
+        candidates = news_pipeline.dedup_semantic(candidates, client)
+    else:
+        for a in candidates:
+            a["score"] = score_article(a)
 
-    print(f"Новых за 24ч: {len(unique)}, релевантных: {len(relevant)}, горячих (2+): {len(hot)}")
+    hot = sorted([a for a in candidates if a["score"] >= 3], key=lambda a: a["score"], reverse=True)[:7]
+
+    print(f"Новых за 24ч: {len(unique)}, релевантных: {len(relevant)}, горячих (3+): {len(hot)}")
 
     for article in hot:
         post = generate_post(article)
