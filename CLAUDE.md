@@ -36,7 +36,7 @@ python3 notifier.py       # проверить новости за послед�
 RSS-ленты → keyword filter → score_article() → AI (Groq) → Telegram
 ```
 
-**Скоринг** (`score_article`) — чисто ключевые слова, без AI-запросов. Слова из `HIGH_VALUE` дают +2, остальные +1. Порог: `monitor.py` использует оценку AI (Groq), `notifier.py` отправляет статьи с оценкой ≥ 2.
+**Скоринг** (`score_article`) — чисто ключевые слова, без AI-запросов, используется как фолбэк. Основной скоринг — структурированный AI-вызов `score_article_ai()` из `news_pipeline.py` (0-5 + reason + summary). Порог: и `monitor.py`, и `notifier.py` отправляют/показывают статьи с оценкой ≥ 3.
 
 **AI-анализ** — Groq API, модели:
 - `notifier.py` → `meta-llama/llama-4-scout-17b-16e-instruct` (лучший русский язык)
