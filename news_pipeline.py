@@ -154,3 +154,74 @@ def extract_full_text(url: str) -> Optional[str]:
     except Exception:
         return None
     return _extract_from_html(html)
+
+
+def _parse_duplicate_groups(raw: str, n_items: int) -> list[list[int]]:
+    """Extract and validate duplicate groups from AI response JSON.
+    Returns list of valid groups (each with >= 2 valid indices), or empty list
+    if parsing fails or no valid groups found."""
+    match = re.search(r"\{.*\}", raw, re.DOTALL)
+    if not match:
+        return []
+    try:
+        data = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return []
+    groups = data.get("duplicates", [])
+    if not isinstance(groups, list):
+        return []
+    valid = []
+    for group in groups:
+        if not isinstance(group, list) or len(group) < 2:
+            continue
+        if all(isinstance(i, int) and 0 <= i < n_items for i in group):
+            valid.append(group)
+    return valid
+
+
+def _apply_duplicate_groups(articles: list[dict], groups: list[list[int]]) -> list[dict]:
+    """Remove lower-scored duplicates from each group, keeping the highest-scored article."""
+    drop: set[int] = set()
+    for group in groups:
+        ranked = sorted(group, key=lambda i: articles[i].get("score", 0), reverse=True)
+        drop.update(ranked[1:])
+    return [a for i, a in enumerate(articles) if i not in drop]
+
+
+def dedup_semantic(articles: list[dict], groq_client) -> list[dict]:
+    """Collapse near-duplicate stories (same event, different sources)
+    using one batched AI call over already-scored articles. Falls back to
+    `articles` unchanged if the call or parsing fails."""
+    if len(articles) <= 1:
+        return articles
+
+    numbered = "\n\n".join(
+        f"[{i}] {a['title']}\n{a.get('verdict') or a.get('summary', '')[:200]}"
+        for i, a in enumerate(articles)
+    )
+    prompt = (
+        "Ниже пронумерованный список новостей. Найди группы, где несколько "
+        "пунктов рассказывают об одном и том же событии (просто с разных сайтов). "
+        "Ответь строго одним JSON-объектом:\n"
+        '{"duplicates": [[i, j, ...], ...]}\n'
+        "Каждая группа — индексы (начиная с 0) новостей об одном и том же событии, "
+        'минимум 2 индекса. Если дублей нет — верни {"duplicates": []}.\n\n'
+        f"{numbered}"
+    )
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": "Отвечай СТРОГО одним JSON-объектом, без пояснений."},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=500,
+        )
+        raw = response.choices[0].message.content
+    except Exception:
+        return articles
+
+    groups = _parse_duplicate_groups(raw, len(articles))
+    if not groups:
+        return articles
+    return _apply_duplicate_groups(articles, groups)

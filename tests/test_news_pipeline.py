@@ -111,3 +111,35 @@ def test_extract_from_html_returns_none_when_trafilatura_raises():
         mock_extract.side_effect = RuntimeError("malformed HTML causes parser crash")
         result = _extract_from_html("<html>garbage</html>")
         assert result is None
+
+
+from news_pipeline import _parse_duplicate_groups, _apply_duplicate_groups
+
+
+def test_parse_duplicate_groups_valid():
+    raw = '{"duplicates": [[0, 2]]}'
+    assert _parse_duplicate_groups(raw, n_items=3) == [[0, 2]]
+
+
+def test_parse_duplicate_groups_ignores_out_of_range_indices():
+    raw = '{"duplicates": [[0, 5]]}'
+    assert _parse_duplicate_groups(raw, n_items=3) == []
+
+
+def test_parse_duplicate_groups_ignores_single_item_groups():
+    raw = '{"duplicates": [[0]]}'
+    assert _parse_duplicate_groups(raw, n_items=3) == []
+
+
+def test_parse_duplicate_groups_invalid_json_returns_empty():
+    assert _parse_duplicate_groups("не могу разобрать", n_items=3) == []
+
+
+def test_apply_duplicate_groups_keeps_highest_score():
+    articles = [
+        {"title": "A", "score": 3},
+        {"title": "B", "score": 5},
+        {"title": "C", "score": 1},
+    ]
+    result = _apply_duplicate_groups(articles, [[0, 1]])
+    assert result == [{"title": "B", "score": 5}, {"title": "C", "score": 1}]
