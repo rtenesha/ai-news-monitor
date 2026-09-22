@@ -55,3 +55,28 @@ def test_generate_post_fallback_escapes_html_in_source():
         assert "&lt;" in result and "&gt;" in result
         # Should NOT contain raw characters in source
         assert "News & Events <Stream></i>" not in result
+
+
+from notifier import _is_hot
+
+
+def test_is_hot_regular_threshold_score_3():
+    assert _is_hot({"score": 3}) is True
+
+
+def test_is_hot_below_threshold_without_buzz():
+    assert _is_hot({"score": 2}) is False
+
+
+def test_is_hot_buzz_rescues_score_2():
+    """Новость, о которой пишут 2+ источника, отправляется даже при score 2."""
+    assert _is_hot({"score": 2, "buzz": 2}) is True
+    assert _is_hot({"score": 2, "buzz": 3}) is True
+
+
+def test_is_hot_buzz_too_weak_for_score_1():
+    assert _is_hot({"score": 1, "buzz": 3}) is False
+
+
+def test_is_hot_defaults_missing_fields():
+    assert _is_hot({}) is False

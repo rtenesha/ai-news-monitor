@@ -129,6 +129,16 @@ def score_article(article: dict) -> int:
     return min(5, score)
 
 
+def _is_hot(article: dict) -> bool:
+    """Отправляем при обычном пороге score >= 3. Новость, о которой пишут
+    2+ источника (buzz от dedup_semantic), — сигнал важности: отправляем
+    даже при score 2. Но score 1 не спасает никакой buzz."""
+    score = article.get("score", 0)
+    if score >= 3:
+        return True
+    return article.get("buzz", 1) >= 2 and score >= 2
+
+
 def clean_text(text: str) -> str:
     # Keep only chars in these Unicode blocks: ASCII, Cyrillic, punctuation, emoji
     def is_allowed(c: str) -> bool:
@@ -296,6 +306,7 @@ def main():
     articles += news_pipeline.fetch_hackernews(hours=24)
     articles += news_pipeline.fetch_github_trending(hours=24)
     articles += news_pipeline.fetch_google_news(GOOGLE_NEWS_QUERIES, hours=24)
+    articles += news_pipeline.fetch_telegram_channels(hours=24)
     articles = news_pipeline.dedup_cross_source(articles)
 
     seen: set[str] = set()
@@ -328,7 +339,11 @@ def main():
         for a in candidates:
             a["score"] = score_article(a)
 
-    hot = sorted([a for a in candidates if a["score"] >= 3], key=lambda a: a["score"], reverse=True)[:7]
+    hot = sorted(
+        [a for a in candidates if _is_hot(a)],
+        key=lambda a: (a.get("buzz", 1), a["score"]),
+        reverse=True,
+    )[:7]
 
     print(f"Новых за 24ч: {len(unique)}, релевантных: {len(relevant)}, горячих (3+): {len(hot)}")
 

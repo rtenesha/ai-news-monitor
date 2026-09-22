@@ -166,7 +166,8 @@ def test_apply_duplicate_groups_keeps_highest_score():
         {"title": "C", "score": 1},
     ]
     result = _apply_duplicate_groups(articles, [[0, 1]])
-    assert result == [{"title": "B", "score": 5}, {"title": "C", "score": 1}]
+    assert result[0] == {"title": "B", "score": 5, "buzz": 2}
+    assert result[1] == {"title": "C", "score": 1}
 
 
 from news_pipeline import _hn_story_to_article, _github_trending_period, _google_news_time_operator, fetch_hackernews, fetch_github_trending
@@ -343,3 +344,139 @@ def test_fetch_github_trending_skips_malformed_rows():
     assert len(articles) == 2
     assert articles[0]["title"] == "repo/one (+10⭐)"
     assert articles[1]["title"] == "repo/two (+20⭐)"
+
+
+from news_pipeline import _strip_html, _parse_telegram_messages, _telegram_post_to_article
+
+_TG_FIXTURE_TEMPLATE = """
+<html><body>
+<div class="tgme_widget_message_wrap js-widget_message_wrap">
+  <div class="tgme_widget_message_text js-message_text" dir="auto">
+    <b>Модели OpenAI оставляли себе записки</b><br/><br/>Во время обучения GPT-5.6
+    исследователи обнаружили &quot;странные указания&quot; в пересказах.
+  </div>
+  <a class="tgme_widget_message_date" href="https://t.me/aioftheday/5208"><time datetime="{ts1}"></time></a>
+</div>
+<div class="tgme_widget_message_wrap js-widget_message_wrap">
+  <div class="tgme_widget_message_text js-message_text" dir="auto">Короткий пост без разметки</div>
+  <a class="tgme_widget_message_date" href="https://t.me/aioftheday/5207"><time datetime="{ts2}"></time></a>
+</div>
+<div class="tgme_widget_message_wrap js-widget_message_wrap">
+  <div class="tgme_widget_message_photo"><img/></div>
+  <a class="tgme_widget_message_date" href="https://t.me/aioftheday/5206"><time datetime="{ts3}"></time></a>
+</div>
+<div class="tgme_widget_message_wrap js-widget_message_wrap">
+  <div class="tgme_widget_message_text js-message_text" dir="auto">Пост без времени</div>
+  <a class="tgme_widget_message_date" href="https://t.me/aioftheday/5205"></a>
+</div>
+</body></html>
+"""
+
+
+def _tg_fixture():
+    """Fixture with timestamps relative to now (2h/3h/4h ago), so the tests
+    don't rot as the wall clock moves."""
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    return _TG_FIXTURE_TEMPLATE.format(
+        ts1=(now - timedelta(hours=2)).isoformat(),
+        ts2=(now - timedelta(hours=3)).isoformat(),
+        ts3=(now - timedelta(hours=4)).isoformat(),
+    )
+
+
+def test_strip_html_removes_tags_and_unescapes_entities():
+    raw = '<b>Заголовок</b><br/><br/>Текст с &quot;кавычками&quot; и &amp; амперсандом'
+    text = _strip_html(raw)
+    assert "<" not in text and ">" not in text
+    assert '"кавычками"' in text
+    assert "&amp;" not in text and "&" in text
+
+
+def test_parse_telegram_messages_extracts_text_url_and_time():
+    messages = _parse_telegram_messages(_tg_fixture(), "aioftheday")
+    assert len(messages) == 2  # media-only and time-less blocks skipped
+    first = messages[0]
+    assert first["url"] == "https://t.me/aioftheday/5208"
+    assert first["published"].tzinfo is not None
+    assert "Модели OpenAI оставляли себе записки" in first["text"]
+    assert '"странные указания"' in first["text"]
+
+
+def test_parse_telegram_messages_no_html_returns_empty():
+    assert _parse_telegram_messages("", "aioftheday") == []
+
+
+def test_telegram_post_to_article_title_is_first_line():
+    from datetime import datetime, timezone
+    msg = {"text": "Модели OpenAI оставляли записки.\nВторая строка с деталями.",
+           "url": "https://t.me/aioftheday/5208",
+           "published": datetime(2026, 9, 18, 12, 33, tzinfo=timezone.utc)}
+    article = _telegram_post_to_article(msg, "aioftheday")
+    assert article["title"].startswith("Модели OpenAI оставляли записки.")
+    assert article["url"] == "https://t.me/aioftheday/5208"
+    assert article["source"] == "Telegram: @aioftheday"
+    assert "Вторая строка" in article["summary"]
+
+
+def test_telegram_post_to_article_skips_empty_text():
+    msg = {"text": "", "url": "https://t.me/aioftheday/1", "published": None}
+    assert _telegram_post_to_article(msg, "aioftheday") is None
+
+
+from news_pipeline import fetch_telegram_channels, TELEGRAM_CHANNELS
+
+
+def test_telegram_channels_list_has_19_channels():
+    assert len(TELEGRAM_CHANNELS) == 19
+    assert "vibecoding_tg" in TELEGRAM_CHANNELS
+    assert "aioftheday" in TELEGRAM_CHANNELS
+    assert "PushEnter" in TELEGRAM_CHANNELS
+
+
+def test_fetch_telegram_channels_skips_failing_channel():
+    from unittest.mock import patch
+    from io import BytesIO
+
+    def mock_urlopen(req, timeout=15):
+        url = req.full_url if hasattr(req, "full_url") else req
+        if "t.me/s/goodchannel" in url:
+            resp = BytesIO(_tg_fixture().encode())
+            resp.__enter__ = lambda self: self
+            resp.__exit__ = lambda self, *args: None
+            return resp
+        raise RuntimeError("channel blocked")
+
+    with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+        articles = fetch_telegram_channels(hours=24, channels=["goodchannel", "brokenchannel"])
+    assert len(articles) == 2
+    assert all(a["source"] == "Telegram: @goodchannel" for a in articles)
+
+
+def test_fetch_telegram_channels_filters_old_posts():
+    from unittest.mock import patch
+    from io import BytesIO
+    from datetime import datetime, timezone
+
+    def mock_urlopen(req, timeout=15):
+        resp = BytesIO(_tg_fixture().encode())
+        resp.__enter__ = lambda self: self
+        resp.__exit__ = lambda self, *args: None
+        return resp
+
+    with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+        articles = fetch_telegram_channels(hours=1, channels=["aioftheday"])
+    assert articles == []  # fixture posts are from 2026-09-18, older than 1h
+
+
+def test_apply_duplicate_groups_records_buzz():
+    from news_pipeline import _apply_duplicate_groups
+    articles = [
+        {"title": "A", "score": 3},
+        {"title": "B", "score": 5},
+        {"title": "C", "score": 1},
+    ]
+    result = _apply_duplicate_groups(articles, [[0, 1]])
+    assert result[0]["title"] == "B"
+    assert result[0]["buzz"] == 2
+    assert result[1].get("buzz", 1) == 1

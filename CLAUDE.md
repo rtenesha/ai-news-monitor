@@ -64,6 +64,7 @@ RSS (10 лент): Zerocoder, ZDNet, Forbes AI, TechCrunch AI, OpenAI Blog, Hugg
 - **Hacker News** — топ-истории с `score ≥ 100` (Firebase API).
 - **GitHub Trending** — через `api.ossinsight.io`, языки Python/TypeScript/All, `min_stars ≥ 5`.
 - **Google News RSS search** — по запросам из `GOOGLE_NEWS_QUERIES` («вайбкодинг», «Claude Code», «AI coding agent»).
+- **Telegram-каналы** (19 шт., список `TELEGRAM_CHANNELS` в `news_pipeline.py`) — посты через веб-превью `t.me/s/<канал>`: ИИ/вайбкодинг, промты/скилы, обучение. Посты проходят тот же keyword+AI-скоринг; дубли одного события из разных каналов склеиваются `dedup_semantic` со счётчиком `buzz` — при `buzz ≥ 2` новость отправляется уже от score 2 (см. `_is_hot` в `notifier.py`).
 
 ## Генерация постов (`notifier.py`)
 

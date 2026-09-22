@@ -3,6 +3,7 @@
 keyless sources, full-text extraction, structured AI scoring, and
 deduplication. See docs/superpowers/specs/2026-07-22-news-pipeline-design.md."""
 
+import html as html_module
 import json
 import re
 import urllib.parse
@@ -185,12 +186,21 @@ def _parse_duplicate_groups(raw: str, n_items: int) -> list[list[int]]:
 
 
 def _apply_duplicate_groups(articles: list[dict], groups: list[list[int]]) -> list[dict]:
-    """Remove lower-scored duplicates from each group, keeping the highest-scored article."""
+    """Remove lower-scored duplicates from each group, keeping the highest-scored
+    article, and record how many sources covered the same event as `buzz`
+    (a signal of importance: the more channels/sites write about it, the
+    more important it is)."""
     drop: set[int] = set()
+    buzz: dict[int, int] = {}
     for group in groups:
         ranked = sorted(group, key=lambda i: articles[i].get("score", 0), reverse=True)
         drop.update(ranked[1:])
-    return [a for i, a in enumerate(articles) if i not in drop]
+        buzz[ranked[0]] = len(group)
+    return [
+        {**a, "buzz": buzz[i]} if i in buzz else a
+        for i, a in enumerate(articles)
+        if i not in drop
+    ]
 
 
 def dedup_semantic(articles: list[dict], groq_client) -> list[dict]:
@@ -364,4 +374,104 @@ def fetch_google_news(queries: list[str], hours: int = 24) -> list[dict]:
                 "source": f"Google News: {query}",
                 "published": None,
             })
+    return articles
+
+
+# Telegram-каналы для трендов: посты забираются через веб-превью t.me/s/<channel>
+# (keyless, как Hacker News и GitHub Trending). Каналы подобраны вручную:
+# ИИ/вайбкодинг (@vibecoding_tg, @korenev_ai, ...), промты/скилы (@dailyprompts),
+# обучение (@edu4telegram, @study24ai), новости ИИ (@ai_newz, @AI_Chad, ...).
+TELEGRAM_CHANNELS = [
+    "vibecoding_tg", "edu4telegram", "technolavka", "aioftheday", "chatgptv",
+    "AI_Chad", "korenev_ai", "GPThelp_ru", "dailyprompts", "study24ai",
+    "neyroskuf", "xor_journal", "cryptoEssay", "gptpublic", "ai_newz",
+    "ai_volution", "denissexy", "neuraldvig", "PushEnter",
+]
+
+
+def _strip_html(text: str) -> str:
+    """Strip tags from a Telegram post snippet, unescape entities, keep
+    line breaks (<br/>) as newlines."""
+    text = re.sub(r"<br\s*/?>", "\n", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html_module.unescape(text)
+    # Collapse spaces on each line separately: newlines are meaningful.
+    lines = [re.sub(r"[ \t]+", " ", line).strip() for line in text.split("\n")]
+    return "\n".join(line for line in lines if line).strip()
+
+
+
+
+def _parse_telegram_messages(page_html: str, channel: str) -> list[dict]:
+    """Parse the t.me/s/<channel> web preview into raw messages. Skips
+    media-only posts (no text block) and posts without a timestamp."""
+    messages = []
+    blocks = page_html.split('<div class="tgme_widget_message_wrap')
+    for block in blocks[1:]:
+        time_match = re.search(r'<time datetime="([^"]*)"', block)
+        link_match = re.search(r'tgme_widget_message_date" href="([^"]*)"', block)
+        text_match = re.search(
+            r'<div class="tgme_widget_message_text[^"]*"[^>]*>(.*?)</div>',
+            block, re.DOTALL,
+        )
+        if not time_match or not link_match:
+            continue
+        try:
+            published = datetime.fromisoformat(time_match.group(1))
+        except ValueError:
+            continue
+        text = _strip_html(text_match.group(1)) if text_match else ""
+        if not text:
+            continue
+        messages.append({
+            "text": text,
+            "url": link_match.group(1),
+            "published": published,
+        })
+    return messages
+
+
+def _telegram_post_to_article(msg: dict, channel: str) -> Optional[dict]:
+    """Convert one parsed Telegram message to the shared article dict.
+    Title = first line of the post (truncated to 100 chars). Returns None
+    if the text is empty."""
+    text = msg["text"].strip()
+    if not text:
+        return None
+    title = text.split("\n", 1)[0].strip()
+    if len(title) > 100:
+        title = title[:97].rstrip() + "…"
+    return {
+        "title": title,
+        "url": msg["url"],
+        "summary": text[:600],
+        "source": f"Telegram: @{channel}",
+        "published": msg["published"],
+    }
+
+
+def fetch_telegram_channels(hours: int = 24, channels: Optional[list[str]] = None) -> list[dict]:
+    """Recent posts from Telegram channels via the keyless t.me/s/ web
+    preview. Skips channels that fail (blocked, renamed); never raises."""
+    channels = channels or TELEGRAM_CHANNELS
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    articles = []
+    for channel in channels:
+        try:
+            req = urllib.request.Request(
+                f"https://t.me/s/{channel}",
+                headers={"User-Agent": _BROWSER_UA},
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                page_html = resp.read().decode("utf-8", errors="ignore")
+        except Exception:
+            continue
+        for msg in _parse_telegram_messages(page_html, channel):
+            if msg["published"].tzinfo is None:
+                msg["published"] = msg["published"].replace(tzinfo=timezone.utc)
+            if msg["published"] < cutoff:
+                continue
+            article = _telegram_post_to_article(msg, channel)
+            if article:
+                articles.append(article)
     return articles
