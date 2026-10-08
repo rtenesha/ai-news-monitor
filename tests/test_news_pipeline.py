@@ -480,3 +480,28 @@ def test_apply_duplicate_groups_records_buzz():
     assert result[0]["title"] == "B"
     assert result[0]["buzz"] == 2
     assert result[1].get("buzz", 1) == 1
+
+
+from news_pipeline import _decode_google_news_url
+
+
+def test_decode_google_news_old_format_embeds_url():
+    """Old-format Google News IDs contain the publisher URL as base64."""
+    import base64
+    url = "https://example.com/real-article"
+    enc = base64.urlsafe_b64encode(b'\x08\x13"\xd8\x01' + url.encode()).decode().rstrip("=")
+    assert _decode_google_news_url(f"https://news.google.com/rss/articles/{enc}?oc=5") == url
+
+
+def test_decode_google_news_passthrough_normal_urls():
+    assert _decode_google_news_url("https://example.com/post") == "https://example.com/post"
+
+
+def test_decode_google_news_new_format_returns_none_on_api_failure():
+    """New opaque IDs need Google's internal API; if it fails, return None —
+    callers must drop the article (source unverifiable)."""
+    from unittest.mock import patch
+    with patch("urllib.request.urlopen", side_effect=RuntimeError("blocked")):
+        assert _decode_google_news_url(
+            "https://news.google.com/rss/articles/CBMi2AFAU_yqLMgL5?oc=5"
+        ) is None

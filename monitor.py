@@ -28,23 +28,11 @@ socket.setdefaulttimeout(10)
 FEEDS = [
     {"name": "Zerocoder",  "url": "https://ya.zerocoder.ru/feed/"},
     {"name": "ZDNet",      "url": "https://www.zdnet.com/news/rss.xml"},
-    {"name": "Хабр / ИИ", "url": "https://habr.com/ru/rss/hubs/artificial_intelligence/articles/"},
-    {"name": "Хабр / ML", "url": "https://habr.com/ru/rss/hubs/machine_learning/articles/"},
-    {"name": "Нейродвиж", "url": "https://rss.app/feeds/uu56qVqY4k9879l4.xml"},
-    {"name": "PushEnter", "url": "https://rss.app/feeds/bprrq7ZPdeYnAxa4.xml"},
-    {"name": "AI Central","url": "https://rss.app/feeds/FC7W2u2sNL1Qtx0X.xml"},
-    {"name": "ИИволюция", "url": "https://rss.app/feeds/avVuy9apZYjuiARE.xml"},
-    {"name": "X: @aibreakfast",    "url": "https://nitter.net/aibreakfast/rss"},
-    {"name": "X: @swyx",           "url": "https://nitter.net/swyx/rss"},
-    {"name": "X: @levelsio",       "url": "https://nitter.net/levelsio/rss"},
-    {"name": "X: @emollick",       "url": "https://nitter.net/emollick/rss"},
-    {"name": "X: @huggingface",    "url": "https://nitter.net/huggingface/rss"},
-    {"name": "X: @googledeepmind", "url": "https://nitter.net/googledeepmind/rss"},
-    {"name": "X: @openai",         "url": "https://nitter.net/openai/rss"},
-    {"name": "X: @anthropicai",    "url": "https://nitter.net/anthropicai/rss"},
-    {"name": "X: @claudeai",       "url": "https://nitter.net/claudeai/rss"},
-    {"name": "X: @deepseek_ai",    "url": "https://nitter.net/deepseek_ai/rss"},
-    {"name": "X: @durov",          "url": "https://nitter.net/durov/rss"},
+    {"name": "OpenAI Blog",        "url": "https://openai.com/news/rss.xml"},
+    {"name": "Google AI Blog",     "url": "https://blog.google/technology/ai/rss/"},
+    {"name": "DeepMind Blog",      "url": "https://deepmind.google/blog/rss.xml"},
+    {"name": "HuggingFace Blog",   "url": "https://huggingface.co/blog/feed.xml"},
+    {"name": "Simon Willison",     "url": "https://simonwillison.net/atom/everything/"},
 ]
 
 KEYWORDS = [
@@ -252,6 +240,7 @@ def main() -> None:
     all_articles += news_pipeline.fetch_hackernews(hours=hours)
     all_articles += news_pipeline.fetch_github_trending(hours=hours)
     all_articles += news_pipeline.fetch_google_news(GOOGLE_NEWS_QUERIES, hours=hours)
+    all_articles += news_pipeline.fetch_telegram_channels(hours=hours)
     all_articles = news_pipeline.dedup_cross_source(all_articles)
     console.print(f"\nВсего найдено (после дедупа): [bold]{len(all_articles)}[/bold] статей")
 

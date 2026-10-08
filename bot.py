@@ -27,7 +27,7 @@ import news_pipeline
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
 
-GROQ_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+GROQ_MODEL = "openai/gpt-oss-120b"
 MSK = timezone(timedelta(hours=3))
 
 _CANDIDATE_CAP = {2: 10, 24: 15, 168: 20}
@@ -365,6 +365,7 @@ async def _send_posts(update: Update, hours: int) -> None:
     articles += news_pipeline.fetch_hackernews(hours=hours)
     articles += news_pipeline.fetch_github_trending(hours=hours)
     articles += news_pipeline.fetch_google_news(GOOGLE_NEWS_QUERIES, hours=hours)
+    articles += news_pipeline.fetch_telegram_channels(hours=hours)
     articles = news_pipeline.dedup_cross_source(articles)
     relevant = filter_by_keywords(articles)
     candidates = sorted(relevant, key=score_article, reverse=True)[:_CANDIDATE_CAP[hours]]

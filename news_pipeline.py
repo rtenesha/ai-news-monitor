@@ -5,7 +5,9 @@ deduplication. See docs/superpowers/specs/2026-07-22-news-pipeline-design.md."""
 
 import html as html_module
 import json
+import os
 import re
+import time
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -113,12 +115,13 @@ def _call_analysis_model(client, article: dict, full_text: Optional[str]) -> str
         f"Содержание: {content[:3000]}"
     )
     response = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         messages=[
             {"role": "system", "content": _ANALYSIS_SYSTEM_PROMPT},
             {"role": "user", "content": prompt},
         ],
-        max_tokens=400,
+        max_tokens=2000,
+        reasoning_effort="low",
     )
     return response.choices[0].message.content
 
@@ -225,12 +228,13 @@ def dedup_semantic(articles: list[dict], groq_client) -> list[dict]:
             f"{numbered}"
         )
         response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
             messages=[
                 {"role": "system", "content": "Отвечай СТРОГО одним JSON-объектом, без пояснений."},
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=500,
+            max_tokens=2000,
+            reasoning_effort="low",
         )
         raw = response.choices[0].message.content
 
@@ -338,6 +342,10 @@ def fetch_github_trending(hours: int = 24, languages: Optional[list] = None, min
     return articles
 
 
+# --- Google News RSS search (keyless): source of extra articles and, with a
+# per-item query, the corroboration check for digest fact-checking. ---
+
+
 def _google_news_time_operator(hours: int) -> str:
     """Generate Google News search time operator based on hours window."""
     if hours <= 100:
@@ -375,6 +383,31 @@ def fetch_google_news(queries: list[str], hours: int = 24) -> list[dict]:
                 "published": None,
             })
     return articles
+
+
+def _decode_google_news_url(url: str) -> Optional[str]:
+    """Google News RSS wraps real links in news.google.com/rss/articles/<id>.
+    Old-format ids are base64url with the publisher URL embedded — decode and
+    unwrap those. New opaque ids need Google's private batchexecute API, which
+    is not implemented here: return None (callers drop the article —
+    source unverifiable)."""
+    if "news.google.com" not in url:
+        return url
+    try:
+        article_id = url.split("/articles/", 1)[1].split("?", 1)[0]
+    except IndexError:
+        return url
+    import base64
+    try:
+        payload = base64.urlsafe_b64decode(article_id + "=" * (-len(article_id) % 4))
+    except Exception:
+        return None
+    prefix = b'\x08\x13"\xd8\x01'
+    if payload.startswith(prefix):
+        decoded = payload[len(prefix):].decode("utf-8", "ignore").strip()
+        if decoded.startswith("http"):
+            return decoded
+    return None
 
 
 # Telegram-каналы для трендов: посты забираются через веб-превью t.me/s/<channel>
@@ -474,4 +507,145 @@ def fetch_telegram_channels(hours: int = 24, channels: Optional[list[str]] = Non
             article = _telegram_post_to_article(msg, channel)
             if article:
                 articles.append(article)
+    return articles
+
+
+# ---------------------------------------------------------------------------
+# Общий RSS-fetch с health-трекингом: единая точка, чтобы мёртвые источники
+# (nitter, просроченные rss.app) больше не молчали — при 3 падениях подряд
+# бот присылает алерт в Telegram.
+# ---------------------------------------------------------------------------
+
+_HEALTH_FILE = os.getenv("SOURCE_HEALTH_FILE", "source_health.json")
+_HEALTH_FAIL_THRESHOLD = 3
+
+
+def _load_health() -> dict:
+    try:
+        with open(_HEALTH_FILE) as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_health(state: dict) -> None:
+    try:
+        with open(_HEALTH_FILE, "w") as f:
+            json.dump(state, f, ensure_ascii=False, indent=1)
+    except OSError:
+        pass
+
+
+def send_alert(text: str) -> bool:
+    """Alert to the operator's Telegram chat (same bot, same chat id as the
+    news posts). Returns True on success; never raises."""
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        return False
+    try:
+        payload = json.dumps({
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            data=payload, headers={"Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=10)
+        return True
+    except Exception:
+        return False
+
+
+def track_source_health(source: str, ok: bool) -> None:
+    """Update consecutive-failure state for one source. On the 3rd failure in
+    a row sends a single Telegram alert; resets on the first success."""
+    state = _load_health()
+    entry = state.get(source, {"fails": 0, "alerted": False})
+    if ok:
+        entry = {"fails": 0, "alerted": False}
+    else:
+        entry["fails"] = entry.get("fails", 0) + 1
+        if entry["fails"] >= _HEALTH_FAIL_THRESHOLD and not entry.get("alerted"):
+            send_alert(
+                f"⚠️ <b>Источник «{source}» не отвечает {_HEALTH_FAIL_THRESHOLD} "
+                f"прогонов подряд</b>\n"
+                f"Проверь код последней ошибки: curl -I &lt;url&gt;. "
+                f"Если это X/nitter или rss.app — фид умер и его надо заменить."
+            )
+            entry["alerted"] = True
+    state[source] = entry
+    _save_health(state)
+
+
+def fetch_rss_feed(name: str, url: str, hours: int) -> tuple[list[dict], bool]:
+    """Fetch one RSS/Atom feed through urllib (so HTTP status is visible) and
+    parse with feedparser. Returns (articles, ok): ok=False on any HTTP error,
+    connection failure, or unparseable body. An empty-but-valid feed is ok."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": _BROWSER_UA})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            status = resp.status
+            body = resp.read()
+        if status >= 400:
+            track_source_health(name, ok=False)
+            return [], False
+    except Exception as e:
+        print(f"RSS error [{name}]: {e}")
+        track_source_health(name, ok=False)
+        return [], False
+
+    feed = feedparser.parse(body)
+    if feed.bozo and not feed.entries:
+        # A HTML error page parses into zero entries with a bozo flag.
+        track_source_health(name, ok=False)
+        return [], False
+
+    articles = []
+    for entry in feed.entries:
+        parsed = entry.get("published_parsed") or entry.get("updated_parsed")
+        if not parsed:
+            continue
+        pub_dt = datetime(*parsed[:6], tzinfo=timezone.utc)
+        if pub_dt < cutoff:
+            continue
+        summary = entry.get("summary", entry.get("description", ""))
+        articles.append({
+            "title": entry.get("title", ""),
+            "url": entry.get("link", ""),
+            "summary": summary[:600],
+            "source": name,
+            "published": pub_dt,
+        })
+    track_source_health(name, ok=True)
+    return articles, True
+
+
+REDDIT_SUBREDDITS = ["LocalLLaMA", "Singularity", "OpenAI", "ClaudeAI", "vibecoding"]
+
+
+def fetch_reddit(subreddits: Optional[list[str]] = None, hours: int = 24) -> list[dict]:
+    """Latest discussions from subreddits via the keyless /new/.rss Atom feed.
+    Sleeps between requests to respect Reddit's rate limit; a 429 counts as a
+    failure for health tracking. Reddit Atom summaries carry HTML — stripped
+    to plain text here. Never raises."""
+    subreddits = subreddits or REDDIT_SUBREDDITS
+    articles = []
+    for i, sub in enumerate(subreddits):
+        if i:
+            time.sleep(3)  # Reddit 429s on burst requests
+        posts, ok = fetch_rss_feed(
+            f"Reddit: r/{sub}", f"https://www.reddit.com/r/{sub}/new/.rss", hours
+        )
+        if not ok:
+            continue
+        for a in posts:
+            a["summary"] = html_module.unescape(
+                re.sub(r"<[^>]+>", " ", a["summary"])
+            ).strip()[:600]
+            a["source"] = f"Reddit: r/{sub}"
+        articles.extend(posts)
     return articles
