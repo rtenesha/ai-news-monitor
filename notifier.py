@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""AI News Notifier — hourly check, sends ready-to-post Zerocoder messages to Telegram."""
+"""AI News Notifier — каждые 2 часа один пост-дайджест «к этому часу»:
+черновик от AI → фактчекинг (сверка с текстами статей + веб-корроборация
+через Google News) → один готовый пост в Telegram."""
 
 import html
 import json
@@ -45,23 +47,11 @@ def save_sent_url(url: str, all_sent: set[str]) -> None:
 FEEDS = [
     {"name": "Zerocoder",  "url": "https://ya.zerocoder.ru/feed/"},
     {"name": "ZDNet",      "url": "https://www.zdnet.com/news/rss.xml"},
-    {"name": "Хабр / ИИ", "url": "https://habr.com/ru/rss/hubs/artificial_intelligence/articles/"},
-    {"name": "Хабр / ML", "url": "https://habr.com/ru/rss/hubs/machine_learning/articles/"},
-    {"name": "Нейродвиж", "url": "https://rss.app/feeds/uu56qVqY4k9879l4.xml"},
-    {"name": "PushEnter", "url": "https://rss.app/feeds/bprrq7ZPdeYnAxa4.xml"},
-    {"name": "AI Central","url": "https://rss.app/feeds/FC7W2u2sNL1Qtx0X.xml"},
-    {"name": "ИИволюция", "url": "https://rss.app/feeds/avVuy9apZYjuiARE.xml"},
-    {"name": "X: @aibreakfast",    "url": "https://nitter.net/aibreakfast/rss"},
-    {"name": "X: @swyx",           "url": "https://nitter.net/swyx/rss"},
-    {"name": "X: @levelsio",       "url": "https://nitter.net/levelsio/rss"},
-    {"name": "X: @emollick",       "url": "https://nitter.net/emollick/rss"},
-    {"name": "X: @huggingface",    "url": "https://nitter.net/huggingface/rss"},
-    {"name": "X: @googledeepmind", "url": "https://nitter.net/googledeepmind/rss"},
-    {"name": "X: @openai",         "url": "https://nitter.net/openai/rss"},
-    {"name": "X: @anthropicai",    "url": "https://nitter.net/anthropicai/rss"},
-    {"name": "X: @claudeai",       "url": "https://nitter.net/claudeai/rss"},
-    {"name": "X: @deepseek_ai",    "url": "https://nitter.net/deepseek_ai/rss"},
-    {"name": "X: @durov",          "url": "https://nitter.net/durov/rss"},
+    {"name": "OpenAI Blog",        "url": "https://openai.com/news/rss.xml"},
+    {"name": "Google AI Blog",     "url": "https://blog.google/technology/ai/rss/"},
+    {"name": "DeepMind Blog",      "url": "https://deepmind.google/blog/rss.xml"},
+    {"name": "HuggingFace Blog",   "url": "https://huggingface.co/blog/feed.xml"},
+    {"name": "Simon Willison",     "url": "https://simonwillison.net/atom/everything/"},
 ]
 
 KEYWORDS = [
@@ -92,27 +82,10 @@ GOOGLE_NEWS_QUERIES = ["вайбкодинг", "Claude Code", "AI coding agent"]
 
 
 def fetch_recent(hours: int = 1) -> list[dict]:
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     articles = []
     for feed_info in FEEDS:
-        try:
-            feed = feedparser.parse(feed_info["url"])
-            for entry in feed.entries:
-                parsed = entry.get("published_parsed") or entry.get("updated_parsed")
-                if not parsed:
-                    continue
-                pub_dt = datetime(*parsed[:6], tzinfo=timezone.utc)
-                if pub_dt < cutoff:
-                    continue
-                summary = entry.get("summary", entry.get("description", ""))
-                articles.append({
-                    "title":   entry.get("title", ""),
-                    "url":     entry.get("link", ""),
-                    "summary": summary[:600],
-                    "source":  feed_info["name"],
-                })
-        except Exception:
-            pass
+        posts, _ok = news_pipeline.fetch_rss_feed(feed_info["name"], feed_info["url"], hours)
+        articles += posts
     return articles
 
 
@@ -209,6 +182,254 @@ def _parse_sections(text: str) -> dict[str, str]:
     return result
 
 
+# --- Дайджест «к этому часу»: вместо поста на каждую новость — один пост
+# каждые 2 часа. Черновик от AI, затем фактчекинг (вердикты сверяются
+# с текстом статей + веб-корроборация через Google News), затем отправка.
+# Контракт зафиксирован тестами tests/test_notifier_digest.py. ---
+
+DIGEST_MAX_ITEMS = 5
+
+
+def _parse_digest_json(raw):
+    """Extract a {"items": [...], "cta": str} plan from model output. Items
+    reference articles by their 1-based n. Returns None on any parse failure."""
+    if not raw:
+        return None
+    text = re.sub(r"```(?:json)?|```", "", str(raw)).strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    try:
+        data = json.loads(text[start:end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return None
+    items = data.get("items")
+    if not isinstance(items, list):
+        return None
+    clean = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        clean.append(item)
+    return {"items": clean, "cta": str(data.get("cta", "")).strip()}
+
+
+def generate_digest(hot, client=None):
+    """Draft digest items from hot articles. With a Groq client — one AI call
+    that returns JSON {items: [{n, headline, text}], cta}; items map to
+    articles by n. Without a client (or on any failure) — bare titles.
+    Returns (items, cta)."""
+    fallback_items = [{"headline": a["title"], "text": "", "article_index": i}
+                      for i, a in enumerate(hot[:DIGEST_MAX_ITEMS])]
+    if not client:
+        return fallback_items, ""
+
+    numbered = "\n\n".join(
+        f"[{i + 1}] {a['source']}: {a['title']}\n{a.get('summary', '')[:600]}"
+        for i, a in enumerate(hot[:DIGEST_MAX_ITEMS])
+    )
+    prompt = (
+        "Ты — редактор Telegram-канала Zerocoder об ИИ и вайбкодинге.\n"
+        f"Собери дайджест из этих новостей — максимум {DIGEST_MAX_ITEMS} самых "
+        "важных и интересных.\n\n"
+        f"{_CONTENT_FORMULA}\n\n{_NATURAL_TEXT_RULES}\n\n"
+        "Для каждого пункта: заголовок до 10 слов с эмодзи в конце (из: 💡 🚀 🔍 💻 📊 ⚡ 🛠 🌐 🎯 👀 🤯 — "
+        "не используй 🤖 и 🧠) и суть в 1-2 коротких предложениях: конкретный факт "
+        "(кто и что сделал) и практический вывод для человека, который занимается ИИ или вайбкодингом.\n"
+        "В конце — одна лёгкая концовка-вопрос на одну строку, без нажима.\n\n"
+        "Ответ дай СТРОГО одним JSON-объектом, без пояснений:\n"
+        '{"items": [{"n": < номер новости из списка>, "headline": <заголовок>, "text": <1-2 предложения>}], '
+        '"cta": <концовка-вопрос>}\n\n'
+        f"{numbered}"
+    )
+    try:
+        response = client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[
+                {"role": "system", "content": "Пиши исключительно на русском языке. Никогда не смешивай латиницу и кириллицу в одном слове. Отвечай СТРОГО валидным JSON."},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=2000,
+            reasoning_effort="low",
+            temperature=0.7,
+        )
+        plan = _parse_digest_json(response.choices[0].message.content)
+    except Exception:
+        plan = None
+
+    if not plan or not plan["items"]:
+        return fallback_items, ""
+
+    items = []
+    for item in plan["items"]:
+        n = item.get("n")
+        if isinstance(n, bool) or not isinstance(n, (int, float)) or not (1 <= int(n) <= len(hot)):
+            continue
+        headline = clean_text(str(item.get("headline", "")))
+        if not headline:
+            continue
+        items.append({
+            "headline": headline,
+            "text": clean_text(str(item.get("text", ""))),
+            "article_index": int(n) - 1,
+        })
+    return items or fallback_items, plan["cta"]
+
+
+def _parse_factcheck_json(raw):
+    """Extract a fact-check list: [{n, verdict, text, query}]. Verdicts are
+    confined to ok/uncertain/wrong. Returns None on any parse failure."""
+    if not raw:
+        return None
+    text = re.sub(r"```(?:json)?|```", "", str(raw)).strip()
+    start = text.find("[")
+    end = text.rfind("]")
+    if start == -1 or end <= start:
+        return None
+    try:
+        data = json.loads(text[start:end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(data, list):
+        return None
+    checks = []
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        n = entry.get("n")
+        verdict = str(entry.get("verdict", "")).lower()
+        if verdict not in {"ok", "uncertain", "wrong"} or not isinstance(n, (int, float)):
+            continue
+        checks.append({
+            "n": int(n),
+            "verdict": verdict,
+            "text": str(entry.get("text", "")).strip(),
+            "query": str(entry.get("query", "")).strip(),
+        })
+    return checks
+
+
+def _apply_verdicts(items, checks):
+    """Merge fact-check verdicts into digest items: drop wrong, replace text
+    of uncertain with the corrected one, attach the web-verification query."""
+    by_n = {c["n"]: c for c in checks}
+    result = []
+    for idx, item in enumerate(items):
+        check = by_n.get(idx + 1)
+        if check is None:
+            result.append(item)
+            continue
+        if check["verdict"] == "wrong":
+            continue
+        kept = dict(item)
+        if check["verdict"] == "uncertain" or (check["verdict"] == "ok" and check["text"]):
+            kept["text"] = clean_text(check["text"])
+        kept["query"] = check["query"]
+        result.append(kept)
+    return result
+
+
+def _publishers_from_google_news(articles):
+    """Publisher names from Google News titles: 'Article title - Publisher'.
+    Returns the set of distinct publishers."""
+    publishers = set()
+    for a in articles:
+        title = a.get("title", "")
+        if " - " in title:
+            publishers.add(title.rsplit(" - ", 1)[1].strip())
+    return publishers
+
+
+def _corroborate_digest(items):
+    """Web corroboration: for each item with a search query, count distinct
+    Google News publishers covering it in the last 24h. Silence is NOT a
+    blocker — the flag is informational. Never raises."""
+    for item in items:
+        item["corroborated"] = False
+        query = item.get("query")
+        if not query:
+            continue
+        try:
+            found = news_pipeline.fetch_google_news([query], hours=24)
+            item["corroborated"] = len(_publishers_from_google_news(found)) >= 2
+        except Exception:
+            item["corroborated"] = False
+    return items
+
+
+def fact_check_digest(items, hot, client=None):
+    """Full fact-check pass: verdicts of every item's claims against the
+    article's full text (AI), web corroboration via Google News (keyless).
+    Wrong-fact items are dropped before sending."""
+    if not items:
+        return items
+    if not client:
+        return _corroborate_digest(
+            [dict(item, query="") for item in items])
+
+    numbered = []
+    for idx, item in enumerate(items[:DIGEST_MAX_ITEMS]):
+        article = hot[item["article_index"]] if 0 <= item["article_index"] < len(hot) else None
+        full_text = (article or {}).get("_full_text") or (article or {}).get("summary", "")
+        numbered.append(
+            f"ПУНКТ {idx + 1}:\n{item['headline']}\n{item['text']}\n"
+            f"Текст статьи: {full_text[:1800]}\n"
+            f"(оригинал: {(article or {}).get('url', '')})"
+        )
+    prompt = (
+        "Ты — фактчекер Telegram-канала. Для каждого пункта дайджеста сверь "
+        "ВСЁ, что в нём утверждается, с текстом статьи:\n"
+        "- вердикт «ok»: факты совпадают с текстом статьи.\n"
+        "- «uncertain»: часть фактов не подтверждается текстом статьи — перепиши "
+        "text так, чтобы остались ТОЛЬКО подтверждённые факты (без домыслов).\n"
+        "- «wrong»: ключевой факт статьи противоречит пункту — пункт нельзя отправлять.\n"
+        "Также предложи query: короткий поисковый запрос (2-4 слова, ключевые сущности "
+        "пункта, имена на языке статьи) чтобы проверить, о том же ли пишут другие СМИ.\n"
+        "Ответ дай СТРОГО JSON-массивом, без пояснений:\n"
+        '[{"n": <номер пункта>, "verdict": "ok" | "uncertain" | "wrong", '
+        '"text": <исправленный текст пункта или пусто>, "query": <поисковый запрос>}]\n\n'
+        + "\n\n".join(numbered)
+    )
+    try:
+        response = client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[
+                {"role": "system", "content": "Отвечай СТРОГО валидным JSON-массивом, без пояснений."},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=2000,
+            reasoning_effort="low",
+        )
+        checks = _parse_factcheck_json(response.choices[0].message.content)
+    except Exception:
+        checks = None
+
+    if not checks:
+        items = [dict(item, query="") for item in items]
+    else:
+        items = _apply_verdicts(items, checks)
+    return _corroborate_digest(items)
+
+
+def assemble_digest_post(items, cta):
+    """Build the final Telegram HTML post from checked digest items."""
+    parts = ["<b>\U0001f4ca Дайджест к этому часу</b>"]
+    for item in items:
+        url = item.get("url", "")
+        entry = f"<b>{html.escape(item['headline'])}</b>"
+        if item.get("text"):
+            entry += f"\n{html.escape(item['text'])}"
+        if url:
+            label = "📎 Оригинальный пост" if item.get("source", "").startswith("X:") \
+                else "🔗 Источник"
+            entry += f'\n{label}: <a href="{html.escape(url, quote=True)}">{url}</a>'
+        parts.append(entry)
+    if cta:
+        parts.append(cta)
+    return "\n\n".join(parts)
+
+
 def generate_post(article: dict) -> str:
     """Generate a ready-to-post Zerocoder channel message."""
     api_key = os.getenv("GROQ_API_KEY")
@@ -245,12 +466,13 @@ def generate_post(article: dict) -> str:
     try:
         client = Groq(api_key=api_key)
         response = client.chat.completions.create(
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            model="openai/gpt-oss-120b",
             messages=[
                 {"role": "system", "content": "Пиши исключительно на русском языке. Никогда не смешивай латиницу и кириллицу в одном слове: 'specialistам' — грубая ошибка, пиши 'специалистам'. Латиница допустима только в именах собственных (OpenAI, Anthropic, ChatGPT) и аббревиатурах (AI, IPO). Пиши живым естественным языком, как для друга, без ИИ-штампов и канцелярита — избегай слов «революционный», «трансформационный», «раскрыть потенциал», «оптимизировать», «инновационный», «прорывной»."},
                 {"role": "user", "content": prompt},
             ],
-            max_tokens=500,
+            max_tokens=2000,
+            reasoning_effort="low",
             temperature=0.7,
         )
         raw = clean_text(response.choices[0].message.content)
@@ -306,6 +528,7 @@ def main():
     articles += news_pipeline.fetch_hackernews(hours=24)
     articles += news_pipeline.fetch_github_trending(hours=24)
     articles += news_pipeline.fetch_google_news(GOOGLE_NEWS_QUERIES, hours=24)
+    articles += news_pipeline.fetch_reddit(hours=24)
     articles += news_pipeline.fetch_telegram_channels(hours=24)
     articles = news_pipeline.dedup_cross_source(articles)
 
@@ -328,6 +551,8 @@ def main():
         client = Groq(api_key=api_key)
         for a in candidates:
             full_text = news_pipeline.extract_full_text(a["url"])
+            # Полный текст пригодится фактчекеру — оставляем на статье.
+            a["_full_text"] = full_text
             result = news_pipeline.score_article_ai(a, client, full_text=full_text)
             if result:
                 a["score"] = result.score
@@ -343,18 +568,42 @@ def main():
         [a for a in candidates if _is_hot(a)],
         key=lambda a: (a.get("buzz", 1), a["score"]),
         reverse=True,
-    )[:7]
+    )[:DIGEST_MAX_ITEMS]
 
-    print(f"Новых за 24ч: {len(unique)}, релевантных: {len(relevant)}, горячих (3+): {len(hot)}")
-
-    for article in hot:
-        post = generate_post(article)
-        if send_to_telegram(post):
-            save_sent_url(article["url"], sent_urls)
-            print(f"Отправлено: {article['title']}")
+    print(f"Новых за 24ч: {len(unique)}, релевантных: {len(relevant)}, горячих: {len(hot)}")
 
     if not hot:
         print("Новых важных статей нет.")
+        return
+
+    client = Groq(api_key=api_key) if api_key else None
+    items, cta = generate_digest(hot, client)
+    items = fact_check_digest(items, hot, client)
+
+    dropped = len(hot) - len(items)
+    if dropped:
+        print(f"Фактчекинг отбросил пунктов: {dropped}")
+    for item in items:
+        mark = "✓" if item.get("corroborated") else "?"
+        print(f" [{mark}] {item['headline']} → {hot[item['article_index']]['url']}")
+
+    if not items:
+        print("Дайджест пуст — после фактчекинга не осталось подтверждённых пунктов.")
+        return
+
+    # Прикрепляем к пунктам источник и ссылку перед сборкой поста.
+    for item in items:
+        a = hot[item["article_index"]]
+        item["url"] = a["url"]
+        item["source"] = a["source"]
+
+    post = assemble_digest_post(items, cta=cta or None)
+    if send_to_telegram(post):
+        for item in items:
+            save_sent_url(hot[item["article_index"]]["url"], sent_urls)
+        print(f"Дайджест отправлен ({len(items)} пункта(ов)).")
+    else:
+        print("Telegram не принял дайджест — см. ошибку выше.")
 
 
 if __name__ == "__main__":
