@@ -206,3 +206,123 @@ def select_topics(articles: list[dict], groq_client=None) -> tuple[list[dict], b
         topics = [t for t in topics if t["total"] >= FALLBACK_TOTAL]
     topics.sort(key=_topic_sort_key, reverse=True)
     return topics[:TOPIC_LIST_MAX], used_ai
+
+
+MAX_CLAIMS = 6
+
+_CARD_SYSTEM_PROMPT = (
+    "Ты — редактор Telegram-канала Zerocoder (ИИ и вайбкодинг). Пиши только на "
+    "русском языке. Ничего не выдумывай: используешь ТОЛЬКО факты из материала "
+    "ниже. Отвечай СТРОГО одним валидным JSON-объектом, без пояснений."
+)
+
+
+def _parse_card_json(raw) -> dict | None:
+    """Validate builder JSON per spec §8 fields. Returns None on any failure."""
+    data = _extract_json_object(raw)
+    if not data:
+        return None
+    topic_title = clean_text(str(data.get("topic_title", ""))).strip()
+    summary = clean_text(str(data.get("summary", ""))).strip()
+    draft = data.get("draft")
+    if not topic_title or not summary or not isinstance(draft, dict):
+        return None
+    draft_body = clean_text(str(draft.get("body", ""))).strip()
+    if not draft_body:
+        return None
+    variants = data.get("headline_variants")
+    if not isinstance(variants, list):
+        variants = []
+    variants = [clean_text(str(v)).strip() for v in variants][:3]
+    variants = [v for v in variants if v]
+    claims = data.get("claims")
+    if not isinstance(claims, list):
+        claims = []
+    claims = [clean_text(str(c)).strip() for c in claims][:MAX_CLAIMS]
+    claims = [c for c in claims if c]
+    return {
+        "topic_title": topic_title,
+        "summary": summary,
+        "why_interesting": clean_text(str(data.get("why_interesting", ""))).strip(),
+        "for_whom": clean_text(str(data.get("for_whom", ""))).strip(),
+        "risks": clean_text(str(data.get("risks", ""))).strip(),
+        "headline_variants": variants,
+        "visual_idea": clean_text(str(data.get("visual_idea", ""))).strip(),
+        "draft_headline": clean_text(str(draft.get("headline", ""))).strip(),
+        "draft_body": draft_body,
+        "draft_cta": clean_text(str(draft.get("cta", ""))).strip(),
+        "claims": claims,
+    }
+
+
+def _card_stub(topic: dict) -> dict:
+    article = topic["article"]
+    return {
+        "topic_title": article["title"],
+        "rubric": topic.get("rubric", "не определена"),
+        "total": topic["total"], "criteria": topic.get("criteria", {}),
+        "post_format": topic.get("post_format", ""),
+        "summary": article.get("summary", "")[:600],
+        "why_interesting": "", "for_whom": "",
+        "first_source_url": article["url"],
+        "risks": "Материал не прочитан полностью (нет AI) — факты не проверены.",
+        "headline_variants": [], "visual_idea": "",
+        "draft_headline": "", "draft_body": "", "draft_cta": "",
+        "claims": [], "confirmed": [], "needs_check": [], "sources": [],
+        "truncated": False, "no_ai": True,
+    }
+
+
+def build_card(topic: dict, groq_client=None) -> dict:
+    """Editor card for one topic (spec §8). With a client: one AI call over
+    the full text; without (or on failure) — metadata-only stub."""
+    if not groq_client:
+        return _card_stub(topic)
+    article = topic["article"]
+    content = article.get("_full_text") or article.get("summary", "")
+    prompt = (
+        "Собери редакторскую карточку по материалу ниже.\n\n"
+        f"Рубрика (уже выбрана скорингом): {topic['rubric']}\n"
+        f"Формат поста (выбран скорингом): {topic['post_format']}\n\n"
+        f"{_NATURAL_TEXT_RULES}\n\n{_CONTENT_FORMULA}\n\n"
+        "Черновик публикации: заголовок до 10 слов с эмодзи (не 🤖 и не 🧠), "
+        "тело 3-4 коротких абзаца — обязателен конкретный факт (кто и что сделал), "
+        "практический вывод для читателя; CTA — один лёгкий вопрос без нажима. "
+        "Черновик НЕ повторяет заголовок темы и не содержит ссылок.\n\n"
+        "Ответь строго одним JSON-объектом:\n"
+        '{"topic_title": "<название темы>", "rubric": "<та же рубрика>", '
+        '"summary": "<2-4 предложения сути>", "why_interesting": "<почему интересно>", '
+        '"for_whom": "<для кого полезно>", "risks": "<ограничения и риски: что может быть '
+        'маркетингом, что не проверено>", '
+        '"headline_variants": ["<информативный>", "<польза>", "<любопытство>"], '
+        '"post_format": "<формат>", "visual_idea": "<одна фраза>", '
+        '"draft": {"headline": "...", "body": "...", "cta": "..."}, '
+        '"claims": ["<утверждение 1>", "<утверждение 2>"] — все проверяемые факты '
+        'черновика по одному в строке, максимум 6}\n\n'
+        f"Источник: {article['source']}\n"
+        f"Заголовок: {article['title']}\n"
+        f"Содержание: {content[:3500]}"
+    )
+    try:
+        response = groq_client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": _CARD_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=3000,
+            reasoning_effort="low",
+        )
+        parsed = _parse_card_json(response.choices[0].message.content)
+    except Exception:
+        parsed = None
+
+    if not parsed:
+        return _card_stub(topic)
+
+    card = _card_stub(topic)
+    card.update(parsed)
+    card["first_source_url"] = article["url"]
+    card["truncated"] = len(content) >= 3500
+    card["no_ai"] = False
+    return card

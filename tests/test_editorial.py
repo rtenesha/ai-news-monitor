@@ -199,3 +199,62 @@ def test_select_topics_scorer_failure_falls_back_per_article():
 
     assert used_ai is True  # клиент был, но конкретная статья ушла в фолбэк
     assert topics[0]["ai"] is False
+
+
+# --- build_card ---
+
+_CARD_RAW = '''```json
+{"topic_title": "Claude ставит скилы сам",
+ "rubric": "Инструменты и приложения",
+ "summary": "Claude Code сам нашёл нужный скил и подключил. Работает без ручных папок.",
+ "why_interesting": "Раньше скилы ставили руками — это экономит час.",
+ "for_whom": "Всем, кто работает с Claude",
+ "risks": "Может выбрать не тот скил",
+ "headline_variants": ["Claude научился ставить себе скилы 🔍",
+                       "Больше не надо подключать скилы руками",
+                       "Скилы сами прыгают в Claude"],
+ "post_format": "Б",
+ "visual_idea": "Скриншот автоподключения скила",
+ "draft": {"headline": "Claude научился ставить себе скилы 🔍",
+           "body": "Claude Code сам нашёл нужный скил и подключил его.\\n\\nРаньше делали руками.",
+           "cta": "Кто-то уже пробовал?"},
+ "claims": ["Claude Code сам находит скил", "Раньше подключали руками"]
+}
+```'''
+
+
+def _topic(full_text="Claude Code сам подключает скилы. Раньше было руками."):
+    import editorial
+    art = _article()
+    art["_full_text"] = full_text
+    return {"article": art, "criteria": {"новизна": 2}, "total": 11,
+            "rubric": "Инструменты и приложения", "post_format": "Б",
+            "one_liner": "суть", "ai": True}
+
+
+def test_build_card_parses_full_json_card():
+    import editorial
+    card = editorial.build_card(_topic(), _fake_client(_CARD_RAW))
+
+    assert card["topic_title"] == "Claude ставит скилы сам"
+    assert card["rubric"] == "Инструменты и приложения"
+    assert card["post_format"] == "Б"
+    assert len(card["headline_variants"]) == 3
+    assert card["draft_headline"] == "Claude научился ставить себе скилы 🔍"
+    assert "скил" in card["draft_body"]
+    assert card["claims"] == ["Claude Code сам находит скил", "Раньше подключали руками"]
+    assert card["no_ai"] is False
+    assert card["truncated"] is False
+
+
+def test_build_card_fallback_without_client_or_bad_json():
+    import editorial
+    topic = _topic()
+    stub = editorial.build_card(topic, None)
+    assert stub["no_ai"] is True
+    assert stub["topic_title"] == topic["article"]["title"]
+    assert stub["draft_body"] == ""
+    assert stub["first_source_url"] == topic["article"]["url"]
+
+    bad = editorial.build_card(topic, _fake_client("не JSON"))
+    assert bad["no_ai"] is True
