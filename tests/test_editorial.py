@@ -147,3 +147,55 @@ def test_score_topic_ai_none_on_garbage_or_exception():
     client.chat.completions.create.side_effect = RuntimeError("down")
     assert editorial.score_topic_ai(_article(), client) is None
     assert editorial.score_topic_ai(_article(), None) is None
+
+
+# --- select_topics ---
+
+def test_select_topics_ai_mode_keeps_total_ge_6_and_sorts():
+    import editorial
+    arts = [_article(f"ChatGPT новость {i}", url=f"https://a.example/{i}")
+            for i in range(3)]
+    strong = '{"criteria": {"новизна": 2, "польза": 2, "удивление": 2, "актуальность": 2, "пересылка": 2, "соответствие": 2}, "total": 12, "rubric": "Новое в ИИ", "post_format": "Б", "one_liner": "сильная новость"}'
+    weak = '{"criteria": {"новизна": 0, "польза": 1, "удивление": 0, "актуальность": 1, "пересылка": 0, "соответствие": 1}, "total": 3, "rubric": "Новое в ИИ", "post_format": "А", "one_liner": "слабая"}'
+    contents = [strong, weak, strong]  # article[1] слабая
+    client = Mock()
+    responses = [Mock() for _ in contents]
+    for r, c in zip(responses, contents):
+        r.choices = [Mock()]
+        r.choices[0].message.content = c
+    client.chat.completions.create.side_effect = responses
+
+    with patch.object(news_pipeline, "extract_full_text", return_value="полный текст"):
+        topics, used_ai = editorial.select_topics(arts, client)
+
+    assert used_ai is True
+    assert len(topics) == 2  # слабая (total 3) отброшена
+    assert all(t["ai"] for t in topics)
+    assert topics[0]["total"] == 12
+    assert topics[0]["article"]["_full_text"] == "полный текст"
+
+
+def test_select_topics_fallback_without_client_marks_non_ai():
+    import editorial
+    arts = [_article(f"ChatGPT новость {i}", url=f"https://a.example/{i}")
+            for i in range(10)]
+    topics, used_ai = editorial.select_topics(arts, None)
+
+    assert used_ai is False
+    assert len(topics) == editorial.TOPIC_LIST_MAX == 8
+    assert all(t["ai"] is False for t in topics)
+    assert all(t["total"] >= editorial.FALLBACK_TOTAL for t in topics)
+    totals = [t["total"] for t in topics]
+    assert totals == sorted(totals, reverse=True)
+
+
+def test_select_topics_scorer_failure_falls_back_per_article():
+    import editorial
+    arts = [_article("ChatGPT новость", url="https://a.example/1")]
+    client = Mock()
+    client.chat.completions.create.side_effect = RuntimeError("down")
+    with patch.object(news_pipeline, "extract_full_text", return_value=None):
+        topics, used_ai = editorial.select_topics(arts, client)
+
+    assert used_ai is True  # клиент был, но конкретная статья ушла в фолбэк
+    assert topics[0]["ai"] is False

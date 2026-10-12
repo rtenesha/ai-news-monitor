@@ -165,3 +165,44 @@ def score_topic_ai(article: dict, groq_client, full_text=None) -> dict | None:
     except Exception:
         return None
     return _parse_topic_score(response.choices[0].message.content)
+
+
+_OLD_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def _topic_sort_key(topic: dict):
+    return (topic["total"], topic["article"].get("published") or _OLD_EPOCH)
+
+
+def select_topics(articles: list[dict], groq_client=None) -> tuple[list[dict], bool]:
+    """Score candidates into editor topics. AI mode: keep total >= LIST_TOTAL
+    (9-12 приоритет, 6-8 резерв). Fallback mode (no client or failed calls):
+    keyword totals marked ai=False, top TOPIC_LIST_MAX with total >= FALLBACK_TOTAL."""
+    used_ai = bool(groq_client)
+    topics = []
+    for article in articles:
+        full_text = None
+        if groq_client:
+            full_text = news_pipeline.extract_full_text(article["url"])
+            article["_full_text"] = full_text
+        result = score_topic_ai(article, groq_client, full_text=full_text)
+        if result:
+            topic = {"article": article, **result, "ai": True}
+        else:
+            topic = {"article": article, "criteria": {},
+                     "total": score_article(article),
+                     "rubric": "не определена", "post_format": "",
+                     "one_liner": article["title"], "ai": False}
+        topics.append(topic)
+
+    if used_ai:
+        # AI-темы по порогу резерва; статьи, у которых AI не прошёл (ai=False),
+        # остаются по keyword-порогу — иначе per-article fallback был бы мёртвым
+        # кодом: keyword total всегда ≤ 5 и каждая такая тема отбрасывалась бы.
+        topics = [t for t in topics
+                  if (t["ai"] and t["total"] >= LIST_TOTAL)
+                  or (not t["ai"] and t["total"] >= FALLBACK_TOTAL)]
+    else:
+        topics = [t for t in topics if t["total"] >= FALLBACK_TOTAL]
+    topics.sort(key=_topic_sort_key, reverse=True)
+    return topics[:TOPIC_LIST_MAX], used_ai
