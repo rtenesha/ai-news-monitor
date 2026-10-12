@@ -9,11 +9,9 @@ from __future__ import annotations
 import html
 import os
 import re
-import time
 import logging
 import urllib.request
 import urllib.parse
-import feedparser
 from datetime import datetime, timezone, timedelta
 from groq import Groq
 from telegram import Update, BotCommand
@@ -23,6 +21,7 @@ from dotenv import load_dotenv
 from monitor import FEEDS, fetch_articles, filter_by_keywords, GOOGLE_NEWS_QUERIES
 from notifier import score_article, generate_post, _NATURAL_TEXT_RULES
 import news_pipeline
+import editorial
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -339,6 +338,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/news7 — главное за неделю, заголовок + короткое описание\n"
         "/list7 — быстрый список за неделю по каждому источнику отдельно (заголовок + ссылка, без ИИ)\n"
         "/reddit — интересные ветки из AI-сабреддитов, заголовок + короткое описание\n\n"
+        "Редакторские карточки:\n"
+        "/digest — темы для карточек по редакторской инструкции, /card N — полная карточка темы\n\n"
         "Понравилась новость из обзора — скопируй её ссылку и вызови /post <ссылка>, "
         "получишь готовый пост.\n\n"
         "Из ссылки — сразу пост:\n"
@@ -420,33 +421,16 @@ REDDIT_SUBS = [
 ]
 
 # Reddit (and plenty of other sites) block requests without a real-looking
-# browser User-Agent — reused for /post's arbitrary-URL fetch too.
+# browser User-Agent — used for /post's arbitrary-URL fetch too.
 _BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 
 
-def fetch_reddit_threads() -> list[dict]:
-    """Pulls threads from a curated list of AI/vibecoding subreddits via
-    Reddit's RSS feed (their JSON listing API 403s non-browser requests)."""
-    threads = []
-    for sub in REDDIT_SUBS:
-        feed = feedparser.parse(f"https://www.reddit.com/r/{sub}/.rss", agent=_BROWSER_UA)
-        if feed.get("status") == 200:
-            for entry in feed.entries:
-                summary = re.sub(r"<[^>]+>", " ", entry.get("summary", ""))
-                threads.append({
-                    "title": entry.get("title", ""),
-                    "url": entry.get("link", ""),
-                    "source": f"Reddit r/{sub}",
-                    "summary": re.sub(r"\s+", " ", summary).strip()[:600],
-                })
-        time.sleep(1.5)  # avoid tripping Reddit's rate limit across subs
-    return threads
-
-
 async def cmd_reddit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    status = await update.message.reply_text("Ищу интересные ветки на Reddit… (около 15 секунд — так надо, чтобы Reddit не отдавал 429)")
+    status = await update.message.reply_text("Ищу интересные ветки на Reddit… (около 30 секунд — так надо, чтобы Reddit не отдавал 429)")
 
-    threads = fetch_reddit_threads()
+    # Единая reddit-доставка с news_pipeline: health-трекинг и фильтрация 429 там,
+    # у bot.py свой список сабов поверх дефолтного.
+    threads = news_pipeline.fetch_reddit(subreddits=REDDIT_SUBS, hours=24)
     relevant = [t for t in threads if score_article(t) >= 1]
     ranked = sorted(relevant, key=score_article, reverse=True)
 
@@ -600,8 +584,56 @@ async def on_plain_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
 
+async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    hours = 24
+    if context.args:
+        try:
+            hours = min(max(int(context.args[0]), 2), 168)
+        except ValueError:
+            pass
+    status = await update.message.reply_text(f"Собираю темы за {hours} ч… "
+                                             "это пара минут: сбор + полный текст + скоринг")
+    client = _groq_client()
+    topics, used_ai = editorial.select_topics(editorial.collect_topics(hours), client)
+
+    seen = set(context.bot_data.get("editorial_seen_cards", ()))
+    fresh = editorial.filter_unseen(topics, seen)
+    context.bot_data["editorial_topics"] = topics
+    context.bot_data["editorial_seen_cards"] = seen
+
+    await status.edit_text(editorial.render_topic_list(fresh, hours, used_ai),
+                           parse_mode="HTML", disable_web_page_preview=True)
+
+
+async def cmd_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    topics = context.bot_data.get("editorial_topics", [])
+    n = editorial.parse_int_arg(context.args)
+    if topics and n is None:
+        await update.message.reply_text("Номер темы: /card 1 … /card %d" % len(topics))
+        return
+    if not topics:
+        await update.message.reply_text("Сначала /digest — соберёт список тем для карточек.")
+        return
+    topic = editorial.resolve_topic(topics, n) if n else None
+    if topic is None:
+        await update.message.reply_text(
+            "Нет такой темы. Сначала /digest, потом /card 1 … /card %d" % len(topics))
+        return
+
+    status = await update.message.reply_text("Строю карточку: полный текст, факты, черновик…")
+    card = editorial.get_or_build_card(topic, _groq_client())
+    seen = set(context.bot_data.get("editorial_seen_cards", ()))
+    seen.add(news_pipeline.normalize_url(topic["article"]["url"]))
+    context.bot_data["editorial_seen_cards"] = seen
+    await status.delete()
+    for msg in editorial.format_card_messages(card):
+        await update.message.reply_html(msg, disable_web_page_preview=True)
+
+
 async def post_init(app: Application) -> None:
     await app.bot.set_my_commands([
+        BotCommand("digest",   "🗂 Темы для карточек по редакторской инструкции"),
+        BotCommand("card",     "📄 Полная карточка темы: /card 1"),
         BotCommand("news2",   "🔥 Горячее за последние 2 часа (кратко)"),
         BotCommand("news24",  "📰 Лучшее за сутки (кратко)"),
         BotCommand("news7",   "📅 Главное за неделю (кратко)"),
@@ -628,6 +660,8 @@ def main() -> None:
     app.add_handler(CommandHandler("post", cmd_post))
     app.add_handler(CommandHandler("rewrite", cmd_rewrite))
     app.add_handler(CommandHandler("reply", cmd_reply))
+    app.add_handler(CommandHandler("digest", cmd_digest))
+    app.add_handler(CommandHandler("card", cmd_card))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_plain_text))
 
     logging.info("Бот запущен, жду команды…")

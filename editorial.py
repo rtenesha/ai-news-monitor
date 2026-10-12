@@ -529,3 +529,37 @@ def format_card_messages(card: dict) -> list[str]:
         html.escape(card["draft_cta"]) if card.get("draft_cta") else "",
     ]))
     return _split_by_paragraphs(card_text + details) + _split_by_paragraphs(draft_text)
+
+
+def parse_int_arg(args: list[str]) -> int | None:
+    """First arg as positive int or None ('/card 3' → 3)."""
+    if not args:
+        return None
+    try:
+        n = int(args[0])
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 1 else None
+
+
+def resolve_topic(topics: list[dict], n: int) -> dict | None:
+    """1-based topic lookup or None (out of range)."""
+    return topics[n - 1] if 1 <= n <= len(topics) else None
+
+
+def get_or_build_card(topic: dict, groq_client=None) -> dict:
+    """Caching wrapper: once a card is built for a topic it is reused —
+    /card again never burns a second AI call on the same topic."""
+    if topic.get("card") is None:
+        card = build_card(topic, groq_client)
+        article = topic["article"]
+        card = fact_check_card(card, article, groq_client)
+        card["published"] = article.get("published")
+        topic["card"] = card
+    return topic["card"]
+
+
+def filter_unseen(topics: list[dict], seen_urls: set[str]) -> list[dict]:
+    """Drop topics whose article URL was already carded this session."""
+    return [t for t in topics
+            if news_pipeline.normalize_url(t["article"]["url"]) not in seen_urls]

@@ -384,3 +384,34 @@ def test_format_card_handles_hf_no_date():
     card["published"] = None
     msgs = editorial.format_card_messages(card)
     assert "трендинг на момент сбора" in msgs[0] or "без даты" in msgs[0]
+
+
+# --- ботовые хелперы ---
+
+def test_parse_int_arg():
+    import editorial
+    assert editorial.parse_int_arg(["3"]) == 3
+    assert editorial.parse_int_arg([]) is None
+    assert editorial.parse_int_arg(["abc"]) is None
+    assert editorial.parse_int_arg(["0"]) is None  # 0 не валиден как номер
+
+
+def test_resolve_topic_bounds():
+    import editorial
+    topics = [_topic()]
+    assert editorial.resolve_topic(topics, 1) is topics[0]
+    assert editorial.resolve_topic(topics, 0) is None
+    assert editorial.resolve_topic(topics, 2) is None
+    assert editorial.resolve_topic([], 1) is None
+
+
+def test_get_or_build_card_reuses_builtin():
+    import editorial
+    topic = _topic()
+    client = _fake_client(_CARD_RAW)
+    first = editorial.get_or_build_card(topic, client)
+
+    # повторный вызов возвращает сохранённую карточку, второй build не выполнялся
+    second = editorial.get_or_build_card(topic, None)
+    assert second is first
+    assert first["published"] == topic["article"]["published"]
