@@ -258,3 +258,69 @@ def test_build_card_fallback_without_client_or_bad_json():
 
     bad = editorial.build_card(topic, _fake_client("не JSON"))
     assert bad["no_ai"] is True
+
+
+# --- fact_check_card ---
+
+def _partially_checked_raw():
+    verdicts = ('{"verdicts": ['
+                '{"n": 1, "verdict": "ok", "text": "Claude Code сам находит скил", "query": "Claude Code skills"}, '
+                '{"n": 2, "verdict": "uncertain", "text": "Переход на автоскилы был раньше", "query": "Claude skills авто"}'
+                '], "headline": "", "body": "Claude Code сам находит скил. Автоскилы пришли ранее.", "cta": ""}')
+    return str(verdicts)
+
+
+def test_fact_check_card_splits_verdicts_and_fixes_draft():
+    import editorial
+    card = editorial.build_card(_topic(), _fake_client(_CARD_RAW))
+    article = _article()
+    article["_full_text"] = "Claude Code сам подключает скилы."
+    with patch.object(news_pipeline, "fetch_google_news", return_value=[]):
+        checked = editorial.fact_check_card(card, article, _fake_client(_partially_checked_raw()))
+
+    assert checked["confirmed"] == ["Claude Code сам находит скил"]
+    assert len(checked["needs_check"]) == 1
+    assert "Переход на автоскилы был раньше" in checked["needs_check"][0]
+    assert "Автоскилы пришли ранее" in checked["draft_body"]
+    assert "Раньше делали руками" not in checked["draft_body"]
+
+
+def test_fact_check_card_needs_no_client():
+    import editorial
+    card = editorial.build_card(_topic(), _fake_client(_CARD_RAW))
+    original = card["draft_body"]
+    checked = editorial.fact_check_card(card, _article(), None)
+
+    assert checked["confirmed"] == []
+    assert checked["needs_check"] == card["claims"]
+    assert checked["draft_body"] == original
+
+
+def test_fact_check_card_garbage_keeps_claims_unchecked():
+    import editorial
+    card = editorial.build_card(_topic(), _fake_client(_CARD_RAW))
+    original = card["draft_body"]
+    checked = editorial.fact_check_card(card, _article(title="x"), _fake_client("не JSON"))
+
+    assert checked["confirmed"] == []
+    assert checked["needs_check"] == card["claims"]
+    assert checked["draft_body"] == original
+
+
+def test_fact_check_card_corroborates_and_collects_sources():
+    import editorial
+    card = editorial.build_card(_topic(), _fake_client(_CARD_RAW))
+    article = _article()
+    article["_full_text"] = "текст."
+    others = [{"title": "Claude skills автоподключение - РБК",
+               "url": "https://news.example/s1"},
+              {"title": "Claude skills автоподключение - Хабр",
+               "url": "https://news.example/s2"},
+              {"title": "тот же url - РБК", "url": article["url"]}]
+    with patch.object(news_pipeline, "fetch_google_news", return_value=others):
+        checked = editorial.fact_check_card(card, article, _fake_client(_partially_checked_raw()))
+
+    assert checked["needs_check"][0].startswith("✓ (подтверждено другими СМИ)")
+    urls = [s["url"] for s in checked["sources"]]
+    assert article["url"] not in urls  # свой источник не попадает в «Доп. источники»
+    assert len(urls) == 2
