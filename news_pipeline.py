@@ -346,6 +346,51 @@ def fetch_github_trending(hours: int = 24, languages: Optional[list] = None, min
 # per-item query, the corroboration check for digest fact-checking. ---
 
 
+HF_TRENDING_URL = "https://huggingface.co/api/{kind}?sort=trendingScore&limit={limit}&direction=-1"
+
+
+def fetch_hf_trending(limit: int = 20) -> list[dict]:
+    """Hugging Face trending models and Spaces via the keyless public API.
+    Not a timed feed — reflects what is trending at fetch moment, so
+    `published` stays None (collectors must not window-filter these).
+    Never raises; rows without an id are skipped."""
+    articles = []
+    for kind, label in (("models", "модели"), ("spaces", "Spaces")):
+        url = HF_TRENDING_URL.format(kind=kind, limit=limit)
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": _BROWSER_UA})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                rows = json.loads(resp.read().decode("utf-8", errors="ignore"))
+        except Exception as e:
+            print(f"HF trending error [{kind}]: {e}")
+            track_source_health(f"HuggingFace: {kind}", ok=False)
+            continue
+        if not isinstance(rows, list):
+            track_source_health(f"HuggingFace: {kind}", ok=False)
+            continue
+        for row in rows:
+            if not isinstance(row, dict) or not row.get("id"):
+                continue
+            name = str(row["id"])
+            title = name.split("/", 1)[1] if "/" in name else name
+            stats = []
+            if row.get("downloads"):
+                stats.append(f"{row['downloads']} загрузок")
+            if row.get("likes"):
+                stats.append(f"{row['likes']} звёзд")
+            summary = "Трендинг на Hugging Face: " + ", ".join(stats) if stats \
+                else "Трендинг на Hugging Face."
+            articles.append({
+                "title": f"{title} (HF {label})",
+                "url": f"https://huggingface.co/{name}",
+                "summary": summary,
+                "source": f"HuggingFace: {label}",
+                "published": None,
+            })
+        track_source_health(f"HuggingFace: {kind}", ok=True)
+    return articles
+
+
 def _google_news_time_operator(hours: int) -> str:
     """Generate Google News search time operator based on hours window."""
     if hours <= 100:
@@ -536,9 +581,21 @@ def _save_health(state: dict) -> None:
         pass
 
 
+# Рубильник всей автоматической отправки: дайджесты notifier/monitor и алерты
+# уходят в Telegram только при TELEGRAM_AUTO_SEND=1 в .env. По умолчанию —
+# выкл: скрипты собирают и логируют новости, но ничего не отправляют.
+# Команды бота (/news24, /post, ...) работают по запросу независимо от него.
+
+def auto_send_enabled() -> bool:
+    return os.getenv("TELEGRAM_AUTO_SEND", "0") == "1"
+
+
 def send_alert(text: str) -> bool:
     """Alert to the operator's Telegram chat (same bot, same chat id as the
-    news posts). Returns True on success; never raises."""
+    news posts). Returns True on success; never raises. Момолчит при
+    отключённой автоотправке."""
+    if not auto_send_enabled():
+        return False
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     if not token or not chat_id:

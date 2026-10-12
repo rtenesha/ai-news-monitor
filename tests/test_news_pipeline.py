@@ -505,3 +505,47 @@ def test_decode_google_news_new_format_returns_none_on_api_failure():
         assert _decode_google_news_url(
             "https://news.google.com/rss/articles/CBMi2AFAU_yqLMgL5?oc=5"
         ) is None
+
+
+def test_fetch_hf_trending_parses_rows_and_skips_malformed():
+    import io
+    import json
+    import news_pipeline
+    from unittest.mock import patch
+
+    payloads = {
+        "https://huggingface.co/api/models?sort=trendingScore&limit=20&direction=-1": [
+            {"id": "meta-llama/Llama-4", "likes": 100, "downloads": 5000},
+            {"no_id": True},
+        ],
+        "https://huggingface.co/api/spaces?sort=trendingScore&limit=20&direction=-1": [
+            {"id": "demo-cool-space", "likes": 7},
+        ],
+    }
+
+    class _Resp(io.BytesIO):
+        status = 200
+
+    def mock_urlopen(req, timeout=15):
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        return _Resp(json.dumps(payloads[url]).encode())
+
+    with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+        articles = news_pipeline.fetch_hf_trending()
+
+    assert len(articles) == 2
+    assert articles[0]["title"] == "Llama-4 (HF модели)"
+    assert articles[0]["url"] == "https://huggingface.co/meta-llama/Llama-4"
+    assert articles[0]["source"] == "HuggingFace: модели"
+    assert "5000 загрузок" in articles[0]["summary"]
+    assert articles[0]["published"] is None
+    assert articles[1]["source"] == "HuggingFace: Spaces"
+    assert articles[1]["summary"].startswith("Трендинг на Hugging Face")
+
+
+def test_fetch_hf_trending_never_raises_on_network_failure():
+    import news_pipeline
+    from unittest.mock import patch
+
+    with patch("urllib.request.urlopen", side_effect=RuntimeError("blocked")):
+        assert news_pipeline.fetch_hf_trending() == []
