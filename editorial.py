@@ -435,3 +435,97 @@ def fact_check_card(card: dict, article: dict, groq_client=None) -> dict:
     if data["cta"]:
         card["draft_cta"] = clean_text(data["cta"])
     return card
+
+TG_LIMIT = 4096
+
+
+def _split_by_paragraphs(text: str, limit: int = 4000) -> list[str]:
+    """Split long text on blank-line boundaries into chunks under limit."""
+    if len(text) <= limit:
+        return [text]
+    chunks, current = [], ""
+    for para in text.split("\n\n"):
+        candidate = para if not current else current + "\n\n" + para
+        if len(candidate) > limit and current:
+            chunks.append(current)
+            current = para
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _fmt_date(published) -> str:
+    if published is None:
+        return "трендинг на момент сбора, без даты выхода"
+    return published.strftime("%d.%m.%Y")
+
+
+def render_topic_list(topics, hours: int, used_ai: bool) -> str:
+    """Compact numbered topic list for /digest (Telegram HTML)."""
+    lines = [f"📋 <b>Темы к рассмотрению</b> ({hours} ч)", ""]
+    if not topics:
+        lines.append("Ничего горячего не нашлось. Попробуй расширить окно: /digest 48")
+        return "\n".join(lines)
+    if not used_ai:
+        lines.append("⚠️ Режим без AI — оценки приблизительные (по ключевым словам)")
+        lines.append("")
+    for i, t in enumerate(topics, 1):
+        status = "приоритет" if t["total"] >= PRIORITY_TOTAL else "резерв"
+        one_liner = t["one_liner"] or t["article"]["title"]
+        lines.append(f"<b>{i}. [{t['total']}/12 · {html.escape(t['rubric'])} · {status}]</b> "
+                     f"{html.escape(one_liner)}")
+        lines.append(f"   ↳ {html.escape(t['article']['source'])} · /card {i}")
+        lines.append("")
+    lines.append("Полная карточка: /card 1 … /card %d" % len(topics))
+    return "\n".join(lines)
+
+
+def format_card_messages(card: dict) -> list[str]:
+    """Editor card as Telegram HTML messages: the card itself plus the draft
+    as a SEPARATE final message (copy-ready). Everything html-escaped."""
+    total = card.get("total", 0)
+    status = "приоритет" if total >= PRIORITY_TOTAL else \
+        ("резерв" if total >= LIST_TOTAL else "ниже порога")
+    facts = "\n".join(f"• {html.escape(f)}" for f in card.get("confirmed", []))
+    if not facts:
+        facts = "—"
+    needs = "\n".join(f"• {html.escape(n)}" for n in card.get("needs_check", []))
+    if not needs:
+        needs = "—"
+    sources = "\n".join(
+        f'<a href="{html.escape(s["url"], quote=True)}">{html.escape(s["title"])}</a>'
+        for s in card.get("sources", [])[:3]) or "—"
+    variants = "\n".join(f"{i}. {html.escape(v)}"
+                         for i, v in enumerate(card.get("headline_variants", []), 1))
+    variants = variants or "—"
+    card_text = "\n".join([
+        f"🗂 <b>Карточка: {html.escape(card['topic_title'])}</b>",
+        f"Рубрика: {html.escape(card['rubric'])} · Оценка: {total}/12 ({status}) · "
+        f"формат {html.escape(card.get('post_format') or '—')}",
+        "Дата публикации: " + _fmt_date(card.get("published")),
+        "",
+        "Краткое содержание:",
+        html.escape(card["summary"]),
+        "",
+    ])
+    details = "\n".join(filter(None, [
+        f"Почему интересно: {html.escape(card.get('why_interesting', ''))}" if card.get("why_interesting") else "",
+        f"Для кого полезно: {html.escape(card.get('for_whom', ''))}" if card.get("for_whom") else "",
+        f"Первый источник: <a href=\"{html.escape(card.get('first_source_url', ''), quote=True)}\">{html.escape(card.get('first_source_url', ''))}</a>",
+        "Доп. источники: " + sources,
+        "Подтверждённые факты:\n" + facts,
+        "Что требует проверки:\n" + needs,
+        f"Ограничения и риски: {html.escape(card.get('risks', ''))}" if card.get("risks") else "",
+        "Варианты заголовка:\n" + variants,
+        f"Визуальная идея: {html.escape(card.get('visual_idea', ''))}" if card.get("visual_idea") else "",
+        "Статус: черновик — на утверждении",
+    ]))
+    draft_text = "\n".join(filter(None, [
+        "✍️ <b>Черновик</b> (формат %s)" % html.escape(card.get("post_format") or "—"),
+        html.escape(card["draft_headline"]) if card.get("draft_headline") else "",
+        html.escape(card["draft_body"]),
+        html.escape(card["draft_cta"]) if card.get("draft_cta") else "",
+    ]))
+    return _split_by_paragraphs(card_text + details) + _split_by_paragraphs(draft_text)

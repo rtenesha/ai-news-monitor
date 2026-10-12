@@ -324,3 +324,63 @@ def test_fact_check_card_corroborates_and_collects_sources():
     urls = [s["url"] for s in checked["sources"]]
     assert article["url"] not in urls  # свой источник не попадает в «Доп. источники»
     assert len(urls) == 2
+
+
+# --- форматирование ---
+
+def test_render_topic_list_numbers_and_marks_priority():
+    import editorial
+    topics = [_topic(), dict(_topic(), total=7)]
+    text = editorial.render_topic_list(topics, 24, used_ai=True)
+
+    assert "1." in text and "2." in text
+    assert "/card 1" in text and "/card 2" in text
+    assert "11/12" in text and "7/12" in text
+    assert "приоритет" in text and "резерв" in text
+
+
+def test_render_topic_list_warns_without_ai():
+    import editorial
+    text = editorial.render_topic_list([_topic()], 24, used_ai=False)
+    assert "без AI" in text
+
+
+def test_format_card_messages_escapes_html():
+    import editorial
+    card = editorial.build_card(_topic(), _fake_client(_CARD_RAW))
+    card["summary"] = "скрипт <b>жирный</b> & хак"
+    card["draft_body"] = "тело <script>alert(1)&</script>"
+    msgs = editorial.format_card_messages(card)
+
+    assert "<b>жирный</b>" not in msgs[0]
+    assert "&lt;b&gt;жирный&lt;/b&gt;" in msgs[0]
+    draft_msg = [m for m in msgs if "Черновик" in m][0]
+    assert "&lt;script&gt;" in draft_msg
+    assert all(len(m) <= 4096 for m in msgs)
+
+
+def test_format_card_messages_keeps_draft_separate():
+    import editorial
+    card = editorial.build_card(_topic(), _fake_client(_CARD_RAW))
+    msgs = editorial.format_card_messages(card)
+    assert "draft_body" not in msgs[0]
+    assert card["draft_body"] in msgs[-1]
+    assert "Черновик" in msgs[-1]
+
+
+def test_format_card_messages_splits_long_body():
+    import editorial
+    card = editorial.build_card(_topic(), _fake_client(_CARD_RAW))
+    card["draft_body"] = "абзац один\n\n" * 700  # ~7000 знаков
+    msgs = editorial.format_card_messages(card)
+    assert all(len(m) <= 4096 for m in msgs)
+    assert len(msgs) > 2
+
+
+def test_format_card_handles_hf_no_date():
+    import editorial
+    card = editorial.build_card(
+        dict(_topic(), article=_article(published=None)), _fake_client(_CARD_RAW))
+    card["published"] = None
+    msgs = editorial.format_card_messages(card)
+    assert "трендинг на момент сбора" in msgs[0] or "без даты" in msgs[0]
