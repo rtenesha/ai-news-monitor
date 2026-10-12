@@ -90,3 +90,60 @@ def test_collect_topics_orders_by_keyword_score_desc():
         topics = editorial.collect_topics(hours=24)
 
     assert topics[0]["url"] == "https://a.example/s2"
+
+# --- score_topic_ai ---
+
+def _score_raw(total_note="10"):
+    return ('{"criteria": {"новизна": 2, "польза": 2, "удивление": 1, '
+            '"актуальность": 2, "пересылка": 1, "соответствие": 2}, '
+            '"total": ' + total_note + ', "rubric": "Инструменты и приложения", '
+            '"post_format": "Б", "one_liner": "Скилы ставятся сами"}')
+
+
+def test_score_topic_ai_parses_valid_json():
+    import editorial
+    result = editorial.score_topic_ai(_article(), _fake_client(_score_raw()))
+    assert result is not None
+    assert result["total"] == 10
+    assert result["criteria"]["новизна"] == 2
+    assert result["rubric"] == "Инструменты и приложения"
+    assert result["post_format"] == "Б"
+    assert result["one_liner"] == "Скилы ставятся сами"
+
+
+def test_score_topic_ai_recomputes_total_from_criteria():
+    # модель соврала про total=12, сумма критериев 10 — код пересчитывает
+    import editorial
+    result = editorial.score_topic_ai(_article(), _fake_client(_score_raw("12")))
+    assert result["total"] == 10
+
+
+def test_score_topic_ai_rejects_out_of_range_criteria():
+    import editorial
+    raw = ('{"criteria": {"новизна": 3, "польза": 2, "удивление": 1, '
+           '"актуальность": 2, "пересылка": 2, "соответствие": 0}, '
+           '"total": 10, "rubric": "Новое в ИИ", "post_format": "А", "one_liner": "x"}')
+    assert editorial.score_topic_ai(_article(), _fake_client(raw)) is None
+
+
+def test_score_topic_ai_rejects_unknown_rubric_and_format():
+    import editorial
+    bad_rubric = _score_raw().replace("Инструменты и приложения", "Финансы")
+    assert editorial.score_topic_ai(_article(), _fake_client(bad_rubric)) is None
+    bad_fmt = _score_raw().replace('"Б"', '"Ж"')
+    assert editorial.score_topic_ai(_article(), _fake_client(bad_fmt)) is None
+
+
+def test_score_topic_ai_drops_reject_rubric():
+    import editorial
+    raw = _score_raw().replace("Инструменты и приложения", "Инфоповод-пустышка")
+    assert editorial.score_topic_ai(_article(), _fake_client(raw)) is None
+
+
+def test_score_topic_ai_none_on_garbage_or_exception():
+    import editorial
+    assert editorial.score_topic_ai(_article(), _fake_client("не JSON вообще")) is None
+    client = Mock()
+    client.chat.completions.create.side_effect = RuntimeError("down")
+    assert editorial.score_topic_ai(_article(), client) is None
+    assert editorial.score_topic_ai(_article(), None) is None
