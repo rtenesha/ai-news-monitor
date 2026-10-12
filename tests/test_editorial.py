@@ -415,3 +415,10 @@ def test_get_or_build_card_reuses_builtin():
     second = editorial.get_or_build_card(topic, None)
     assert second is first
     assert first["published"] == topic["article"]["published"]
+
+
+def test_split_hard_breaks_single_paragraph_over_limit():
+    import editorial
+    chunks = editorial._split_by_paragraphs("х" * 5000)
+    assert all(len(c) <= 4000 for c in chunks)
+    assert "".join(chunks) == "х" * 5000

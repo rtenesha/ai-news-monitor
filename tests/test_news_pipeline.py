@@ -549,3 +549,34 @@ def test_fetch_hf_trending_never_raises_on_network_failure():
 
     with patch("urllib.request.urlopen", side_effect=RuntimeError("blocked")):
         assert news_pipeline.fetch_hf_trending() == []
+
+
+def test_fetch_hf_trending_spaces_link_to_space_pages():
+    """Space-страницы живут под /spaces/<id> — иначе битая 404-ссылка (ревью)."""
+    import io
+    import json
+    import news_pipeline
+    from unittest.mock import patch
+
+    payloads = {
+        "https://huggingface.co/api/models?sort=trendingScore&limit=20&direction=-1": [
+            {"id": "meta-llama/Llama-4"},
+        ],
+        "https://huggingface.co/api/spaces?sort=trendingScore&limit=20&direction=-1": [
+            {"id": "demo/cool-space"},
+        ],
+    }
+
+    class _Resp(io.BytesIO):
+        status = 200
+
+    def mock_urlopen(req, timeout=15):
+        url = req.full_url if hasattr(req, "full_url") else str(req)
+        return _Resp(json.dumps(payloads[url]).encode())
+
+    with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+        articles = news_pipeline.fetch_hf_trending()
+
+    urls = {a["title"]: a["url"] for a in articles}
+    assert urls["Llama-4 (HF модели)"] == "https://huggingface.co/meta-llama/Llama-4"
+    assert urls["cool-space (HF Spaces)"] == "https://huggingface.co/spaces/demo/cool-space"

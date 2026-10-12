@@ -598,7 +598,8 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     seen = set(context.bot_data.get("editorial_seen_cards", ()))
     fresh = editorial.filter_unseen(topics, seen)
-    context.bot_data["editorial_topics"] = topics
+    # храним отфильтрованный список: нумерация /card должна совпадать с отрисовкой
+    context.bot_data["editorial_topics"] = fresh
     context.bot_data["editorial_seen_cards"] = seen
 
     await status.edit_text(editorial.render_topic_list(fresh, hours, used_ai),
@@ -627,7 +628,13 @@ async def cmd_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.bot_data["editorial_seen_cards"] = seen
     await status.delete()
     for msg in editorial.format_card_messages(card):
-        await update.message.reply_html(msg, disable_web_page_preview=True)
+        try:
+            await update.message.reply_html(msg, disable_web_page_preview=True)
+        except Exception:
+            # фолбэк на plain-text: Telegram не принял HTML (например, лимит)
+            plain = html.unescape(re.sub(r"<[^>]+>", "", msg))
+            await update.message.reply_text(plain[:editorial.TG_LIMIT],
+                                            disable_web_page_preview=True)
 
 
 async def post_init(app: Application) -> None:

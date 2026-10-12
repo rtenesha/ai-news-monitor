@@ -445,6 +445,13 @@ def _split_by_paragraphs(text: str, limit: int = 4000) -> list[str]:
         return [text]
     chunks, current = [], ""
     for para in text.split("\n\n"):
+        # абзац сам длиннее лимита — режем жёстко по знакам
+        while len(para) > limit:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(para[:limit])
+            para = para[limit:]
         candidate = para if not current else current + "\n\n" + para
         if len(candidate) > limit and current:
             chunks.append(current)

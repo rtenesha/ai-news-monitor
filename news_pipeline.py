@@ -382,7 +382,8 @@ def fetch_hf_trending(limit: int = 20) -> list[dict]:
                 else "Трендинг на Hugging Face."
             articles.append({
                 "title": f"{title} (HF {label})",
-                "url": f"https://huggingface.co/{name}",
+                "url": (f"https://huggingface.co/spaces/{name}" if kind == "spaces"
+                        else f"https://huggingface.co/{name}"),
                 "summary": summary,
                 "source": f"HuggingFace: {label}",
                 "published": None,
