@@ -208,7 +208,7 @@ def print_digest(articles: list[dict], used_ai: bool) -> None:
         f"[bold white]📰 Дайджест ИИ-новостей — {date_str}[/bold white]",
         border_style="blue", expand=False,
     ))
-    label = "Llama 3 via Groq — бесплатно" if used_ai else "авто-скоринг по ключевым словам"
+    label = "gpt-oss-120b via Groq" if used_ai else "авто-скоринг по ключевым словам"
     console.print(f"\n[bold yellow]Оценка релевантности ({label}):[/bold yellow]")
     for i, a in enumerate(articles, 1):
         stars = "⭐" * a.get("score", 0)
@@ -258,14 +258,16 @@ def main() -> None:
 
     print_digest(articles, used_ai)
 
-    # Send to Telegram if configured
+    # Send to Telegram if configured and auto-send is on
     tg_token = os.getenv("TELEGRAM_BOT_TOKEN")
     tg_chat = os.getenv("TELEGRAM_CHAT_ID")
-    if tg_token and tg_chat:
+    if tg_token and tg_chat and news_pipeline.auto_send_enabled():
         console.print("\n[bold]4. Отправляю в Telegram...[/bold]", end=" ")
         msg = format_telegram_message(articles, hours)
         if send_to_telegram(msg):
             console.print("[green]отправлено![/green]")
+    elif tg_token and tg_chat:
+        console.print("\n[dim]Автоотправка выключена (TELEGRAM_AUTO_SEND) — дайджест только в логе[/dim]")
     else:
         console.print("\n[dim]Telegram не настроен — добавь TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID в .env[/dim]")
 

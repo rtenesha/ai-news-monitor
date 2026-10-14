@@ -423,11 +423,28 @@ def assemble_digest_post(items, cta):
         if url:
             label = "📎 Оригинальный пост" if item.get("source", "").startswith("X:") \
                 else "🔗 Источник"
-            entry += f'\n{label}: <a href="{html.escape(url, quote=True)}">{url}</a>'
+            entry += (f'\n{label}: <a href="{html.escape(url, quote=True)}">'
+                      f'{html.escape(url)}</a>')
         parts.append(entry)
     if cta:
-        parts.append(cta)
+        parts.append(html.escape(cta))
     return "\n\n".join(parts)
+
+
+def render_digest_text(items, cta):
+    """Plain-text fallback of the digest (no HTML markup): used when Telegram
+    rejects the HTML version, so a broken item cost is a retry, not silence."""
+    lines = ["\U0001f4ca Дайджест к этому часу"]
+    for item in items:
+        entry = f"• {item['headline']}"
+        if item.get("text"):
+            entry += f"\n{item['text']}"
+        if item.get("url"):
+            entry += f"\n{item['url']}"
+        lines.append(entry)
+    if cta:
+        lines.append(cta)
+    return "\n\n".join(lines)
 
 
 def generate_post(article: dict) -> str:
@@ -497,21 +514,23 @@ def generate_post(article: dict) -> str:
         return fallback
 
 
-def send_to_telegram(text: str) -> bool:
+def send_to_telegram(text: str, parse_mode: str = "HTML") -> bool:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
         return False
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = json.dumps({
+    payload: dict = {
         "chat_id": chat_id,
         "text": text,
-        "parse_mode": "HTML",
         "disable_web_page_preview": False,
-    }).encode("utf-8")
+    }
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
     req = urllib.request.Request(
-        url, data=payload, headers={"Content-Type": "application/json"}
+        url, data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
     )
     try:
         urllib.request.urlopen(req, timeout=10)
@@ -597,13 +616,28 @@ def main():
         item["url"] = a["url"]
         item["source"] = a["source"]
 
+    if not news_pipeline.auto_send_enabled():
+        print("Автоотправка выключена (TELEGRAM_AUTO_SEND) — дайджест только в логе:")
+        print(assemble_digest_post(items, cta=cta or None))
+        return
+
     post = assemble_digest_post(items, cta=cta or None)
-    if send_to_telegram(post):
+    sent = send_to_telegram(post)
+    if not sent:
+        # Telegram может отклонить HTML (случайные < или & в пункте) — не
+        # теряем дайджест молча: ретраем plain-text версией, иначе алерт.
+        plain = render_digest_text(items, cta=cta or None)
+        sent = send_to_telegram(plain, parse_mode="")
+    if sent:
         for item in items:
             save_sent_url(hot[item["article_index"]]["url"], sent_urls)
         print(f"Дайджест отправлен ({len(items)} пункта(ов)).")
     else:
-        print("Telegram не принял дайджест — см. ошибку выше.")
+        news_pipeline.send_alert(
+            "⚠️ <b>Дайджест не отправлен</b>\n"
+            "Telegram отклонил и HTML, и plain-text версии — смотри лог прогона."
+        )
+        print("Дайджест не отправлен: Telegram не принял ни HTML, ни plain-text.")
 
 
 if __name__ == "__main__":

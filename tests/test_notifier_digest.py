@@ -179,3 +179,31 @@ def test_assemble_digest_post_escapes_html():
     assert "<b> inj" not in post
     assert "&lt;b&gt;" in post
     assert "x=1&amp;y=2" in post
+
+def test_assemble_digest_post_escapes_link_display_text():
+    """Untrusted feed URL must not act as markup in the anchor's display text."""
+    items = [{"headline": "H", "text": "T", "article_index": 0,
+              "url": 'https://bbc.com/news</a><a href="https://phish.example/claim">https://bbc.com/news'}]
+    post = notifier.assemble_digest_post(items, cta=None)
+    assert 'href="https://phish.example' not in post
+    assert "&lt;/a&gt;&lt;a" in post
+
+
+def test_assemble_digest_post_escapes_cta():
+    cta = '<a href="https://phish.example/promo">Бонус</a>'
+    items = [{"headline": "H", "text": "T", "article_index": 0, "url": "https://a.com"}]
+    post = notifier.assemble_digest_post(items, cta=cta)
+    assert 'href="https://phish.example' not in post
+    assert "&lt;a" in post
+
+
+def test_render_digest_text_plain_fallback():
+    """Plain-text fallback: no HTML tags at all, same content as the HTML post."""
+    items = [{"headline": "Sora открыли 💡", "text": "OpenAI открыла доступ.",
+              "article_index": 0, "url": "https://openai.com/sora"}]
+    text = notifier.render_digest_text(items, cta="Кто уже пробовал?")
+    assert "📊 Дайджест к этому часу" in text
+    assert "Sora открыли 💡" in text
+    assert "https://openai.com/sora" in text
+    assert "<" not in text  # no HTML tags anywhere in the plain-text fallback
+    assert text.strip().endswith("Кто уже пробовал?")

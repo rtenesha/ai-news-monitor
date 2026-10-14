@@ -1,5 +1,19 @@
+# Секреты и окружение
 .env
+
+# Рантайм-дата скриптов
+sent_urls.txt
+source_health.json
+monitor.log
+
+# Локальные скриншоты отладки
+*.png
+
 __pycache__/
 *.pyc
 .DS_Store
 .superpowers/
+.pytest_cache/
+
+# Отдельный склонированный репозиторий — не часть этого проекта
+Horizon/
