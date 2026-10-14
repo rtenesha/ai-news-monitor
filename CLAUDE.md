@@ -60,13 +60,14 @@ RSS-ленты → keyword filter → score_article() → AI (Groq) → Telegram
 
 ## Источники
 
-RSS (10 лент): Zerocoder, ZDNet, Forbes AI, TechCrunch AI, OpenAI Blog, HuggingFace Blog, DeepMind Blog, Karpathy (Substack), One Useful Thing (Ethan Mollick), DAIR AI (Medium).
+RSS (5 лент, списки `FEEDS` в `monitor.py` и `notifier.py` синхронизированы): OpenAI Blog, Google AI Blog, DeepMind Blog, HuggingFace Blog, Simon Willison. Historically Zerocoder, ZDNet и Forbes AI / TechCrunch AI / Karpathy / One Useful Thing / DAIR AI убраны по решению редактора (окт 2026).
 
 Дополнительно, через `news_pipeline.py` (все keyless, без API-ключей):
 - **Hacker News** — топ-истории с `score ≥ 100` (Firebase API).
 - **GitHub Trending** — через `api.ossinsight.io`, языки Python/TypeScript/All, `min_stars ≥ 5`.
 - **Google News RSS search** — по запросам из `GOOGLE_NEWS_QUERIES` («вайбкодинг», «Claude Code», «AI coding agent»).
-- **Telegram-каналы** (19 шт., список `TELEGRAM_CHANNELS` в `news_pipeline.py`) — посты через веб-превью `t.me/s/<канал>`: ИИ/вайбкодинг, промты/скилы, обучение. Посты проходят тот же keyword+AI-скоринг; дубли одного события из разных каналов склеиваются `dedup_semantic` со счётчиком `buzz` — при `buzz ≥ 2` новость отправляется уже от score 2 (см. `_is_hot` в `notifier.py`).
+- **Reddit** — 5 сабреддитов (`REDDIT_SUBREDDITS`: LocalLLaMA, Singularity, OpenAI, ClaudeAI, vibecoding) через Atom-ленту `/new/.rss`, 3с паузы между запросами.
+- **Telegram-каналы** (19 шт., `TELEGRAM_CHANNELS` в `news_pipeline.py`) — **обходятся по решению редактора (2026-10-14)**: `fetch_telegram_channels` не вызывается ни в `monitor.py`, ни в `notifier.py`, ни в `bot.py`. Функция и список каналов в `news_pipeline.py` сохранены — можно вернуть одним вызовом. Раньше их посты участвовали в дедупликации `buzz` (см. `_is_hot` в `notifier.py`) — сейчас эффектbuzz возможен только от СМИ/Google News.
 
 ## Дайджест (`notifier.py`)
 

@@ -366,7 +366,8 @@ async def _send_posts(update: Update, hours: int) -> None:
     articles += news_pipeline.fetch_hackernews(hours=hours)
     articles += news_pipeline.fetch_github_trending(hours=hours)
     articles += news_pipeline.fetch_google_news(GOOGLE_NEWS_QUERIES, hours=hours)
-    articles += news_pipeline.fetch_telegram_channels(hours=hours)
+    # fetch_telegram_channels: по решению редактора (2026-10-14) телеграм-каналы
+    # убраны из выборки новостей — команда тоже больше их не подключает.
     articles = news_pipeline.dedup_cross_source(articles)
     relevant = filter_by_keywords(articles)
     candidates = sorted(relevant, key=score_article, reverse=True)[:_CANDIDATE_CAP[hours]]

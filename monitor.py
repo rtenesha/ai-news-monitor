@@ -26,8 +26,6 @@ load_dotenv()
 socket.setdefaulttimeout(10)
 
 FEEDS = [
-    {"name": "Zerocoder",  "url": "https://ya.zerocoder.ru/feed/"},
-    {"name": "ZDNet",      "url": "https://www.zdnet.com/news/rss.xml"},
     {"name": "OpenAI Blog",        "url": "https://openai.com/news/rss.xml"},
     {"name": "Google AI Blog",     "url": "https://blog.google/technology/ai/rss/"},
     {"name": "DeepMind Blog",      "url": "https://deepmind.google/blog/rss.xml"},

@@ -45,8 +45,6 @@ def save_sent_url(url: str, all_sent: set[str]) -> None:
 
 
 FEEDS = [
-    {"name": "Zerocoder",  "url": "https://ya.zerocoder.ru/feed/"},
-    {"name": "ZDNet",      "url": "https://www.zdnet.com/news/rss.xml"},
     {"name": "OpenAI Blog",        "url": "https://openai.com/news/rss.xml"},
     {"name": "Google AI Blog",     "url": "https://blog.google/technology/ai/rss/"},
     {"name": "DeepMind Blog",      "url": "https://deepmind.google/blog/rss.xml"},
@@ -548,7 +546,8 @@ def main():
     articles += news_pipeline.fetch_github_trending(hours=24)
     articles += news_pipeline.fetch_google_news(GOOGLE_NEWS_QUERIES, hours=24)
     articles += news_pipeline.fetch_reddit(hours=24)
-    articles += news_pipeline.fetch_telegram_channels(hours=24)
+    # TELEGRAM_CHANNELS: по решению редактора телеграм-каналы из выборки дайджеста
+    # убраны (2026-10-14) — fetch_telegram_channels не вызывается.
     articles = news_pipeline.dedup_cross_source(articles)
 
     seen: set[str] = set()
