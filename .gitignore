@@ -5,6 +5,7 @@
 sent_urls.txt
 source_health.json
 monitor.log
+bot.log
 
 # Локальные скриншоты отладки
 *.png
