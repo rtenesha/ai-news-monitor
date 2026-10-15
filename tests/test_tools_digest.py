@@ -76,3 +76,102 @@ def test_github_rate_limited_marks_uncertain():
                "source": "X", "published": None}
         info = tools_digest.fetch_official_page(art)
     assert info["status"] == "uncertain"  # НЕ отбрасывается
+
+
+# --- select_tools ---
+
+def _fake_client(content: str):
+    """Minimal Groq client stand-in, same pattern as tests/test_editorial.py."""
+    class _Message:
+        def __init__(self, c): self.content = c
+
+    class _Choice:
+        def __init__(self, c): self.message = _Message(c)
+
+    class _Resp:
+        def __init__(self, c): self.choices = [_Choice(c)]
+
+    class _Completions:
+        @staticmethod
+        def create(**kwargs):
+            return _Resp(content)
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Client:
+        chat = _Chat()
+
+    return _Client()
+
+
+def _fake_articles(n):
+    urls = [f"https://github.com/a/tool-{i}" if i % 2 == 0 else f"https://x.dev/app-{i}"
+            for i in range(n)]
+    return [{"title": f"Tool {i}", "url": urls[i],
+             "summary": "CLI утилита для автоответов бесплатно", "source": "Test",
+             "published": None} for i in range(n)]
+
+
+def _prep(n):
+    """prepare_candidates on fakes without real network."""
+    import tools_digest
+    with patch.object(tools_digest.news_pipeline, "extract_full_text", return_value=None), \
+         patch.object(tools_digest.urllib.request, "urlopen", side_effect=OSError("no net")):
+        return tools_digest.prepare_candidates(_fake_articles(n))
+
+
+_TOOLS_RAW = json.dumps({
+    "title": "Инструменты недели",
+    "items": [
+        {"name": "Tool A", "url": "https://github.com/a/a",
+         "category": "CLI", "platforms": "macOS, Linux", "free_tier": "open-source",
+         "desc": "Быстро чистит папки проектов от артефактов сборки.",
+         "limits": "Нужен Python 3.8+", "proof_url": "https://github.com/a/a#readme",
+         "verdict": "ok"},
+        {"name": "Tool B", "url": "https://b.dev", "category": "Web",
+         "platforms": "Web", "free_tier": "free tier",
+         "desc": "Сканер безопасности.", "limits": "", "proof_url": "https://b.dev/docs",
+         "verdict": "uncertain"},
+        {"name": "Tool C", "url": "https://c.app", "category": "Web",
+         "platforms": "Web", "free_tier": "не проверено",
+         "desc": "Выдуман.", "limits": "", "proof_url": "",
+         "verdict": "wrong"}],
+    "notes": "лимитов нет"}, ensure_ascii=False)
+
+
+def test_select_tools_verdicts_and_cap():
+    import tools_digest
+    cands = _prep(8)
+    result = tools_digest.select_tools(cands, _fake_client(_TOOLS_RAW))
+    names = [it["name"] for it in result["items"]]
+    assert "Tool C" not in names            # wrong отсеян
+    assert result["items"][0]["verdict"] == "ok"
+    assert result["mode"] == "ai"
+    assert len(result["items"]) <= 5
+
+
+def test_select_tools_all_wrong_falls_back():
+    """Every item wrong → no items → fallback candidates, not an empty post."""
+    import tools_digest
+    all_wrong = json.dumps({"title": "T",
+                            "items": [{"name": "X", "url": "https://x.dev", "category": "Web",
+                                       "platforms": "Web", "free_tier": "?", "desc": "d",
+                                       "limits": "", "proof_url": "", "verdict": "wrong"}] * 3},
+                           ensure_ascii=False)
+    result = tools_digest.select_tools(_prep(4), _fake_client(all_wrong))
+    assert result["mode"] == "fallback"
+    assert result["items"]
+
+
+def test_select_tools_without_ai_fallback():
+    import tools_digest
+    result = tools_digest.select_tools(_prep(8), client=None)
+    assert result["mode"] == "fallback"
+    assert all("name" in it and "url" in it for it in result["items"])
+
+
+def test_select_tools_parse_garbage_falls_back():
+    import tools_digest
+    result = tools_digest.select_tools(_prep(4), _fake_client("```json\n{bad"))
+    assert result["mode"] == "fallback"

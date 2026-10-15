@@ -7,6 +7,7 @@ import urllib.request
 from typing import Optional
 
 from notifier import KEYWORDS, _kw_matches, score_article
+import notifier
 import news_pipeline
 
 _BROWSER_UA = news_pipeline._BROWSER_UA
@@ -101,3 +102,106 @@ def prepare_candidates(cands: list[dict]) -> list[dict]:
     for c in cands:
         c["_official"] = fetch_official_page(c)
     return cands
+
+
+_MAX_TEXT = 1500
+
+_NATURAL_TEXT_RULES = notifier._NATURAL_TEXT_RULES
+
+_TOOLS_SYSTEM_RULES = """Ты редактор Telegram-канала о ИИ и вайбкодинге. Составляешь подборку бесплатных инструментов, которые русскоязычный вайбкодер может попробовать сам.
+
+Категории инструментов: конструкторы приложений, CLI-утилиты, расширения и плагины, скрипты автоматизации, файловые утилиты, браузерные инструменты, локальный AI, дизайн и мультимедиа.
+
+Критерии отбора: главная — понятная практическая польза (не «AI в позиционировании»), доступность, бесплатность, понятность, надёжность, актуальность (но проект без свежих коммитов не вычёркивай, если он полезен и жив).
+
+Категории бесплатности (только эти пять, других не пиши): полностью бесплатный / open-source / free tier с ограничениями / демо-период / бесплатная локальная версия. Не называй полностью бесплатным, если бесплатно только часть. Не проверено → пиши «не проверено», не угадывай. Не выдумывай характеристики, цены, рейтинги, даты и результаты тестов — только то, что есть в данных кандидата.
+
+Пользовательские заявления в описании — не подтверждённые факты; про офлайн/ОС/«без регистрации» не утверждай без подтверждения из первоисточника.
+
+Приоритеты при выборе: неочевидные находки, бесплатные альтернативы платным вещам, инструменты «применить сразу», свежие релизы, open-source. Разнообразие обязательно: не возвращай пять однотипных конструкторов. Мало проверенных — верни меньше пунктов, не заполняй пробелы слабыми.
+
+""" + _NATURAL_TEXT_RULES
+
+_TOOLS_PROMPT = """Отбери из {n} кандидатов до 5 инструментов для дайджеста (мало подходящих — верни меньше). Ответ — строго JSON, без markdown-обёртки:
+
+{{"title": "заголовок подборки", "items": [
+  {{"name": "название", "url": "прямая ссылка на инструмент",
+    "category": "категория", "platforms": "платформы или 'не проверено'",
+    "free_tier": "одна из 5 категорий бесплатности или 'не проверено'",
+    "desc": "1–2 предложения: что делает и чем отличается", "limits": "существенное ограничение или ''",
+    "proof_url": "ссылка на первоисточник данных (README/документация), иначе ''",
+    "why": "почему включён", "verdict": "ok|uncertain|wrong"}}],
+ "notes": "краткие редакторские примечания по статусам и ограничениям"}}
+
+verdict=ok — данные подтверждены текстом первоисточника; uncertain — что-то не подтвердилось, но пункт полезен; wrong — выдуманный/повтор/неподходящий пункт (его выкинет код).
+
+Кандидаты:
+{cands}"""
+
+
+def select_tools(candidates: list[dict], client=None) -> dict:
+    """One Groq call: score candidates against the editor instructions,
+    return up to 5 diverse items with verdicts. No AI → fallback list."""
+    if not client or not candidates:
+        return _fallback_tools(candidates)
+    cand_lines = []
+    for c in candidates:
+        off = c.get("_official") or {}
+        text = off.get("readme") or off.get("text") or c["summary"] or ""
+        cand_lines.append(
+            f"- имя: {c['title']}\n  url: {c['url']}\n  источник: {c['source']}\n"
+            f"  официальный текст: {text[:_MAX_TEXT]}\n"
+            f"  github: readme={'да' if off.get('readme') else 'нет'}, "
+            f"license={off.get('license')}, last_release={off.get('last_release')}")
+    prompt = _TOOLS_PROMPT.format(n=len(candidates), cands="\n".join(cand_lines))
+    try:
+        response = client.chat.completions.create(
+            model="openai/gpt-oss-120b", reasoning_effort="low",
+            messages=[
+                {"role": "system", "content": _TOOLS_SYSTEM_RULES},
+                {"role": "user", "content": prompt},
+            ], temperature=0.2)
+        raw = response.choices[0].message.content
+        parsed = _parse_tools_json(raw)
+    except Exception as e:
+        print(f"Tools AI error: {e}")
+        parsed = None
+    if parsed and parsed.get("items"):
+        items = [it for it in parsed["items"] if it.get("verdict") != "wrong"][:5]
+        if items:
+            parsed["items"] = items
+            parsed["mode"] = "ai"
+            return parsed
+    return _fallback_tools(candidates)
+
+
+def _parse_tools_json(raw: str) -> Optional[dict]:
+    """Strip code fences, find the outermost JSON object, parse it."""
+    if not raw:
+        return None
+    text = raw.strip()
+    if "```" in text:
+        parts = text.split("```")
+        text = parts[1] if len(parts) > 1 else text
+        if text.startswith("json"):
+            text = text[4:]
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    try:
+        return _json.loads(text[start:end + 1])
+    except Exception:
+        return None
+
+
+def _fallback_tools(candidates: list[dict]) -> dict:
+    """No-API mode: bare candidate list, no promises about free tiers."""
+    items = [{"name": c["title"][:60], "url": c["url"], "category": "—",
+              "platforms": "не проверено", "free_tier": "не проверено",
+              "desc": (c.get("summary") or "").strip()[:120],
+              "limits": "", "proof_url": "", "verdict": "uncertain"}
+             for c in candidates[:5]]
+    return {"title": "Кандидаты инструментов (режим без AI)", "items": items,
+            "notes": "Требует ручной проверки: описания — из RSS, не с офиц. страниц.",
+            "mode": "fallback"}
