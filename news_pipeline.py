@@ -701,6 +701,47 @@ def fetch_dev_to(hours: int = 168) -> list[dict]:
     return articles
 
 
+AWESOME_REPOS = ["taskade/awesome-vibe-coding", "yeaight7/awesome-ai-devtools"]
+_AWESOME_ITEM = re.compile(r'[-*]\s*\[([^\]\n]+)\]\((https?://[^)\s]+)\)\s*[-–—:]?\s*(.*)')
+
+
+def _parse_awesome_markdown(md: str) -> list[dict]:
+    """README item lines like "- [Name](url) — desc" into articles.
+    Bad/odd lines are skipped, not fatal."""
+    articles = []
+    for m in _AWESOME_ITEM.finditer(md):
+        title, url, desc = m.group(1).strip(), m.group(2).strip(), (m.group(3) or "")
+        if not title or not url or url.startswith(("mailto:", "#")):
+            continue
+        articles.append({
+            "title": title, "url": url,
+            "summary": re.sub(r"[*_`]+", "", desc).strip()[:600],
+            "source": "Awesome", "published": None,
+        })
+    return articles
+
+
+def fetch_awesome_lists(hours: int = 168) -> list[dict]:
+    """Parse awesome-list READMEs from raw.githubusercontent.com.
+    Never raises; a failing repo only shrinks the list."""
+    articles = []
+    for repo in AWESOME_REPOS:
+        name = f"Awesome: {repo}"
+        try:
+            req = urllib.request.Request(
+                f"https://raw.githubusercontent.com/{repo}/main/README.md",
+                headers={"User-Agent": _BROWSER_UA})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                body = resp.read().decode("utf-8", "replace")
+        except Exception as e:
+            print(f"Awesome error [{name}]: {e}")
+            track_source_health(name, ok=False)
+            continue
+        track_source_health(name, ok=True)
+        articles += _parse_awesome_markdown(body)
+    return articles
+
+
 REDDIT_SUBREDDITS = ["LocalLLaMA", "Singularity", "OpenAI", "ClaudeAI", "vibecoding"]
 
 

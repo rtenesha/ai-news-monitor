@@ -600,3 +600,32 @@ def test_fetch_producthunt_and_dev_to_contract():
         frf.return_value = ([], False)
         assert news_pipeline.fetch_dev_to(24) == []
         assert frf.call_count == len(news_pipeline.DEV_TO_FEED_URLS)
+
+
+AWESOME_FIXTURE = """# Awesome Vibe Coding
+Intro text — ignored.
+- [Tool A](https://github.com/a/tool-a) — CLI-сканер репо. Нужен Python 3.8+.
+- [Tool B](https://b.dev) – **веб-сервис**, free tier 3 проекта.
+* [Tool C](https://github.com/c/tool-c): локальная утилита сжатия
+  - вложенный пункт без ссылки — игнорируется
+1. [Not a link][] — пропустить
+"""
+
+
+def test_parse_awesome_markdown():
+    import news_pipeline
+    arts = news_pipeline._parse_awesome_markdown(AWESOME_FIXTURE)
+    urls = [a["url"] for a in arts]
+    assert urls == ["https://github.com/a/tool-a", "https://b.dev",
+                    "https://github.com/c/tool-c"]
+    assert arts[0]["title"] == "Tool A"
+    assert "CLI-сканер" in arts[0]["summary"]
+    assert arts[1]["summary"].endswith("free tier 3 проекта.")
+
+
+def test_fetch_awesome_lists_never_raises_and_tracks_health():
+    import news_pipeline
+    from unittest.mock import patch
+    with patch.object(news_pipeline.urllib.request, "urlopen",
+                      side_effect=OSError("down")):
+        assert news_pipeline.fetch_awesome_lists(24) == []
