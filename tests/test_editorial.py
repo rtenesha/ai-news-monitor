@@ -345,6 +345,23 @@ def test_render_topic_list_warns_without_ai():
     assert "без AI" in text
 
 
+def test_render_topic_list_shows_article_link():
+    import editorial
+    text = editorial.render_topic_list([_topic()], 24, used_ai=True)
+    assert 'href="https://a.example/1"' in text
+    assert "https://a.example/1" in text
+
+
+def test_render_topic_list_escapes_malicious_url():
+    """Untrusted feed URL must not inject markup into the list HTML."""
+    import editorial
+    topic = _topic()
+    topic["article"]["url"] = 'https://a.example/1"><a href="https://phish.example/x">'
+    text = editorial.render_topic_list([topic], 24, used_ai=True)
+    assert 'href="https://phish.example' not in text
+    assert "&quot;&gt;&lt;a" in text
+
+
 def test_format_card_messages_escapes_html():
     import editorial
     card = editorial.build_card(_topic(), _fake_client(_CARD_RAW))

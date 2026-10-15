@@ -484,6 +484,10 @@ def render_topic_list(topics, hours: int, used_ai: bool) -> str:
         lines.append(f"<b>{i}. [{t['total']}/12 · {html.escape(t['rubric'])} · {status}]</b> "
                      f"{html.escape(one_liner)}")
         lines.append(f"   ↳ {html.escape(t['article']['source'])} · /card {i}")
+        url = t["article"].get("url") or ""
+        if url:
+            lines.append(f'   🔗 <a href="{html.escape(url, quote=True)}">'
+                         f'{html.escape(url)}</a>')
         lines.append("")
     lines.append("Полная карточка: /card 1 … /card %d" % len(topics))
     return "\n".join(lines)
