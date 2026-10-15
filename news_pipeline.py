@@ -682,6 +682,25 @@ def fetch_rss_feed(name: str, url: str, hours: int) -> tuple[list[dict], bool]:
     return articles, True
 
 
+PH_FEED_URL = "https://www.producthunt.com/feed?category=artificial-intelligence"
+DEV_TO_FEED_URLS = ["https://dev.to/feed/tag/ai", "https://dev.to/feed/tag/aitools"]
+
+
+def fetch_producthunt(hours: int = 168) -> list[dict]:
+    """Product Hunt AI feed via generic RSS wrapper. Never raises."""
+    posts, _ok = fetch_rss_feed("Product Hunt", PH_FEED_URL, hours)
+    return posts
+
+
+def fetch_dev_to(hours: int = 168) -> list[dict]:
+    """DEV Community AI-tag feed. Never raises; failures just shrink the list."""
+    articles = []
+    for url in DEV_TO_FEED_URLS:
+        posts, _ok = fetch_rss_feed("DEV.to", url, hours)
+        articles += posts
+    return articles
+
+
 REDDIT_SUBREDDITS = ["LocalLLaMA", "Singularity", "OpenAI", "ClaudeAI", "vibecoding"]
 
 

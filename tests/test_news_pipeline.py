@@ -580,3 +580,23 @@ def test_fetch_hf_trending_spaces_link_to_space_pages():
     urls = {a["title"]: a["url"] for a in articles}
     assert urls["Llama-4 (HF модели)"] == "https://huggingface.co/meta-llama/Llama-4"
     assert urls["cool-space (HF Spaces)"] == "https://huggingface.co/spaces/demo/cool-space"
+
+
+def test_fetch_producthunt_and_dev_to_contract():
+    """Both fetchers must wrap fetch_rss_feed: return lists, never raise."""
+    import news_pipeline
+    assert news_pipeline.PH_FEED_URL == "https://www.producthunt.com/feed?category=artificial-intelligence"
+    # network-free: fetch via fake to check the wrapper passes hours through
+    from unittest.mock import patch
+    with patch.object(news_pipeline, "fetch_rss_feed") as frf:
+        frf.return_value = ([{"title": "t", "url": "u", "summary": "s",
+                              "source": "PH", "published": None}], True)
+        arts = news_pipeline.fetch_producthunt(24)
+    assert arts == frf.return_value[0]
+    assert frf.call_args[0][1] == news_pipeline.PH_FEED_URL
+    assert frf.call_args[0][2] == 24
+
+    with patch.object(news_pipeline, "fetch_rss_feed") as frf:
+        frf.return_value = ([], False)
+        assert news_pipeline.fetch_dev_to(24) == []
+        assert frf.call_count == len(news_pipeline.DEV_TO_FEED_URLS)
