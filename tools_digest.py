@@ -1,6 +1,7 @@
 """Tools digest pipeline: collect → check official pages → one AI selection."""
 from __future__ import annotations
 
+import html
 import json as _json
 import re
 import urllib.request
@@ -205,3 +206,41 @@ def _fallback_tools(candidates: list[dict]) -> dict:
     return {"title": "Кандидаты инструментов (режим без AI)", "items": items,
             "notes": "Требует ручной проверки: описания — из RSS, не с офиц. страниц.",
             "mode": "fallback"}
+
+def render_tools_post(result: dict) -> str:
+    parts = [f"<b>{html.escape(result['title'])}</b>"]
+    checked = [it for it in result["items"] if it["verdict"] != "wrong"]
+    if len(checked) < 3:
+        parts.append("⚠️ Проверенных инструментов недостаточно — покажу только их:")
+    for it in result["items"]:
+        url = it.get("url") or ""
+        name = f'› <a href="{html.escape(url, quote=True)}">{html.escape(it["name"])}</a>'
+        line = f"{name} [{html.escape(it.get('platforms') or '')}] — {html.escape(it['desc'])}"
+        if it.get("limits"):
+            line += f" (⚠️ {html.escape(it['limits'])})"
+        if it.get("verdict") == "uncertain":
+            line += "\n<i>требует уточнения</i>"
+        parts.append(line)
+    return "\n\n".join(parts)
+
+
+def render_tools_sources(result: dict) -> str:
+    lines = ["🔎 <b>Источники проверки</b>"]
+    for it in result["items"]:
+        lines.append(f"• {html.escape(it['name'])}: {html.escape(it.get('proof_url') or it['url'])}")
+    return "\n".join(lines)
+
+
+def render_tools_notes(result: dict) -> str:
+    notes = [html.escape(result.get("notes") or "—")]
+    if result.get("mode") == "fallback":
+        notes.append("Режим без AI: не делай выводов о бесплатности без проверки.")
+    return "\n".join(notes)
+
+
+def build_tools_messages(result: dict) -> list[str]:
+    """Three ready blocks for the bot, each ≤ 4096."""
+    from editorial import _split_by_paragraphs
+    return (_split_by_paragraphs(render_tools_sources(result))
+            + _split_by_paragraphs(render_tools_post(result))
+            + _split_by_paragraphs(render_tools_notes(result)))

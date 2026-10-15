@@ -175,3 +175,60 @@ def test_select_tools_parse_garbage_falls_back():
     import tools_digest
     result = tools_digest.select_tools(_prep(4), _fake_client("```json\n{bad"))
     assert result["mode"] == "fallback"
+
+
+# --- render blocks ---
+
+def _ok_item(desc="Важная утилита, которую можно попробовать сразу.", i=0):
+    return {"name": f"Tool {chr(65 + i)}", "url": f"https://t{i}.example",
+            "category": "CLI", "platforms": "macOS, Linux",
+            "free_tier": "open-source", "desc": desc,
+            "limits": "Нужен Python 3.8+", "proof_url": f"https://t{i}.example/doc",
+            "verdict": "ok"}
+
+
+def test_render_tools_post_format_and_escape():
+    import tools_digest
+    result = tools_digest.select_tools(_prep(8), _fake_client(_TOOLS_RAW))
+    post = tools_digest.render_tools_post(result)
+    assert "<b>Инструменты недели</b>" in post
+    assert "›" in post and "<a href=" in post
+    assert "⚠️" in post  # limits непустые → пометка есть
+    # эскейп
+    result2 = dict(result)
+    result2["items"] = [dict(result["items"][0], name="Скрипт <b>жирный</b>")]
+    post2 = tools_digest.render_tools_post(result2)
+    assert "<b>жирный</b>" not in post2 and "&lt;b&gt;жирный" in post2
+
+
+def test_render_tools_malicious_url_cannot_inject():
+    import tools_digest
+    url = 'https://a.example"></a><a href="https://phish.example">'
+    result = {"title": "T", "mode": "ai", "notes": "n",
+              "items": [{"name": "H", "url": url,
+                         "category": "Web", "platforms": "Web",
+                         "free_tier": "free", "desc": "d", "limits": "",
+                         "proof_url": "https://safe.example/doc",
+                         "verdict": "ok"}]}
+    post = tools_digest.render_tools_post(result)
+    assert 'href="https://phish.example' not in post
+    sources = tools_digest.render_tools_sources(result)
+    assert 'href="https://phish.example' not in sources
+
+
+def test_render_tools_insufficient_warning():
+    import tools_digest
+    result = {"title": "T", "mode": "ai", "notes": "n",
+              "items": [_ok_item()]}  # ровно 1 проверенный
+    post = tools_digest.render_tools_post(result)
+    assert "недостаточно" in post
+
+
+def test_render_tools_split_at_limit():
+    """Long posts cut by _split_by_paragraphs like editor cards do."""
+    import tools_digest
+    items = [_ok_item(desc="x" * 4500, i=i) for i in range(5)]
+    result = {"title": "T", "mode": "ai", "notes": "n", "items": items}
+    msgs = tools_digest.build_tools_messages(result)
+    assert len(msgs) >= 2
+    assert all(len(m) <= 4096 for m in msgs)
