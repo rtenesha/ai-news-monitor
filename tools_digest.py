@@ -10,6 +10,7 @@ from typing import Optional
 from notifier import KEYWORDS, _kw_matches, score_article
 import notifier
 import news_pipeline
+from news_pipeline import normalize_url
 
 _BROWSER_UA = news_pipeline._BROWSER_UA
 
@@ -170,6 +171,10 @@ def select_tools(candidates: list[dict], client=None) -> dict:
     if parsed and parsed.get("items"):
         items = [it for it in parsed["items"] if it.get("verdict") != "wrong"][:5]
         if items:
+            # wrong-пункты выброшены из поста, но их url запоминаем — чтобы
+            # get_or_build_tools исключил их из следующих прогонов.
+            parsed["rejected"] = [it.get("url") for it in parsed["items"]
+                                  if it.get("verdict") == "wrong" and it.get("url")]
             parsed["items"] = items
             parsed["mode"] = "ai"
             return parsed
@@ -244,3 +249,23 @@ def build_tools_messages(result: dict) -> list[str]:
     return (_split_by_paragraphs(render_tools_sources(result))
             + _split_by_paragraphs(render_tools_post(result))
             + _split_by_paragraphs(render_tools_notes(result)))
+
+
+def get_or_build_tools(store: dict, hours: int, client=None) -> list[str]:
+    """Cache of the last run in bot_data-shaped dict; builds on miss or window change."""
+    cache = store.setdefault("tools_cache", {})   # {"hours": int, "result": dict}
+    seen: set = store.setdefault("tools_seen", set())
+    if cache and cache.get("hours") == hours:
+        return build_tools_messages(cache["result"])
+    cands = [c for c in collect_tools(hours)
+             if c.get("url") and normalize_url(c["url"]) not in seen]
+    if not cands:
+        return ["Инструментов не нашлось — попробуй: /tools 720"]
+    result = select_tools(prepare_candidates(cands[:20]), client)
+    # seen: все url, которые AI уже оценил (ok / uncertain / wrong) — отклонённый
+    # кандидат не должен всплывать в каждом следующем прогоне.
+    item_urls = {normalize_url(it["url"]) for it in result.get("items", []) if it.get("url")}
+    item_urls |= {normalize_url(u) for u in result.get("rejected", []) if u}
+    store["tools_seen"] |= item_urls
+    store["tools_cache"] = {"hours": hours, "result": result}
+    return build_tools_messages(result)

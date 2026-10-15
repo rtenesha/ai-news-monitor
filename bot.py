@@ -22,6 +22,7 @@ from monitor import FEEDS, fetch_articles, filter_by_keywords, GOOGLE_NEWS_QUERI
 from notifier import score_article, generate_post, _NATURAL_TEXT_RULES
 import news_pipeline
 import editorial
+import tools_digest
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -607,6 +608,32 @@ async def cmd_digest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
                            parse_mode="HTML", disable_web_page_preview=True)
 
 
+async def cmd_tools(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    hours = 168
+    if context.args:
+        try:
+            hours = min(max(int(context.args[0]), 6), 720)
+        except ValueError:
+            pass
+    await update.message.reply_text(
+        f"Собираю инструменты за {hours} ч… это 1–3 минуты")
+    client = _groq_client()
+    try:
+        msgs = tools_digest.get_or_build_tools(context.bot_data, hours, client)
+    except Exception as e:
+        logging.exception("cmd_tools failed")
+        await update.message.reply_text(f"Не получилось собрать дайджест: {e}")
+        return
+    for m in msgs:
+        try:
+            await update.message.reply_html(m, disable_web_page_preview=True)
+        except Exception:
+            # фолбэк на plain-text: Telegram не принял HTML (например, лимит)
+            plain = html.unescape(re.sub(r"<[^>]+>", "", m))
+            await update.message.reply_text(plain[:4096],
+                                            disable_web_page_preview=True)
+
+
 async def cmd_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     topics = context.bot_data.get("editorial_topics", [])
     n = editorial.parse_int_arg(context.args)
@@ -642,6 +669,7 @@ async def post_init(app: Application) -> None:
     await app.bot.set_my_commands([
         BotCommand("digest",   "🗂 Темы для карточек по редакторской инструкции"),
         BotCommand("card",     "📄 Полная карточка темы: /card 1"),
+        BotCommand("tools",    "🧰 Дайджест бесплатных инструментов: /tools"),
         BotCommand("news2",   "🔥 Горячее за последние 2 часа (кратко)"),
         BotCommand("news24",  "📰 Лучшее за сутки (кратко)"),
         BotCommand("news7",   "📅 Главное за неделю (кратко)"),
@@ -670,6 +698,7 @@ def main() -> None:
     app.add_handler(CommandHandler("reply", cmd_reply))
     app.add_handler(CommandHandler("digest", cmd_digest))
     app.add_handler(CommandHandler("card", cmd_card))
+    app.add_handler(CommandHandler("tools", cmd_tools))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_plain_text))
 
     logging.info("Бот запущен, жду команды…")

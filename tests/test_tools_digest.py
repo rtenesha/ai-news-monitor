@@ -232,3 +232,42 @@ def test_render_tools_split_at_limit():
     msgs = tools_digest.build_tools_messages(result)
     assert len(msgs) >= 2
     assert all(len(m) <= 4096 for m in msgs)
+
+
+# --- get_or_build_tools (bot integration pieces) ---
+
+def _fake_article(url, i):
+    return {"title": f"New Tool {i}", "url": url,
+            "summary": "CLI утилита для автоответов бесплатно", "source": "Test",
+            "published": None}
+
+
+def test_get_or_build_tools_cache_and_seen():
+    import tools_digest
+    store: dict = {}
+    client = _fake_client(_TOOLS_RAW)
+
+    def fresh_cands(hours, **kw):
+        return [_fake_article(f"https://new{i}.example/1", i) for i in range(6)]
+
+    with patch.object(tools_digest, "collect_tools", side_effect=fresh_cands) as ct, \
+         patch.object(tools_digest.news_pipeline, "extract_full_text", return_value=None), \
+         patch.object(tools_digest.urllib.request, "urlopen", side_effect=OSError("no net")):
+        msgs1 = tools_digest.get_or_build_tools(store, 168, client)
+        assert ct.call_count == 1
+        assert store["tools_cache"]["hours"] == 168
+        # повторный вызов — то же окно → кэш, сбор не запускается второй раз
+        msgs2 = tools_digest.get_or_build_tools(store, 168, client)
+        assert ct.call_count == 1
+        assert msgs1 == msgs2
+        # другое окно → пересбор; уже показанные url исключены через tools_seen
+        import news_pipeline
+        ok_urls = {news_pipeline.normalize_url(it["url"])
+                   for it in json.loads(_TOOLS_RAW)["items"]}
+        assert store["tools_seen"] & ok_urls == ok_urls
+    with patch.object(tools_digest, "collect_tools",
+                      side_effect=lambda h, **kw: [_fake_article(u, i)
+                                                   for i, u in enumerate(ok_urls)]):
+        msgs3 = tools_digest.get_or_build_tools(store, 24, client)
+    # все кандидаты уже показаны → явное сообщение, а не пустой пост
+    assert msgs3 == ["Инструментов не нашлось — попробуй: /tools 720"]
