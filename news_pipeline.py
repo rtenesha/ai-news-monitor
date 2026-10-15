@@ -702,7 +702,11 @@ def fetch_dev_to(hours: int = 168) -> list[dict]:
 
 
 AWESOME_REPOS = ["taskade/awesome-vibe-coding", "yeaight7/awesome-ai-devtools"]
-_AWESOME_ITEM = re.compile(r'[-*]\s*\[([^\]\n]+)\]\((https?://[^)\s]+)\)\s*[-–—:]?\s*(.*)')
+# awesome-README: маркер списка («-», «*», «+», «•») может отсутствовать,
+# между маркером и ссылкой бывают эмодзи/декор; валидные [name](https...) пары.
+_AWESOME_ITEM = re.compile(
+    r'(?:^|\n)[-–—*+•]?\s*[^[\n]*?\[([^\]\n]+)\]\((https?://[^)\s]+)\)\s*[-–—:]?\s*(.*)')
+_AWESOME_IMAGE_URL = re.compile(r'\.(?:png|jpe?g|gif|svg|webp|ico)$', re.IGNORECASE)
 
 
 def _parse_awesome_markdown(md: str) -> list[dict]:
@@ -712,6 +716,8 @@ def _parse_awesome_markdown(md: str) -> list[dict]:
     for m in _AWESOME_ITEM.finditer(md):
         title, url, desc = m.group(1).strip(), m.group(2).strip(), (m.group(3) or "")
         if not title or not url or url.startswith(("mailto:", "#")):
+            continue
+        if _AWESOME_IMAGE_URL.search(url):   # ссылка-картинка, не инструмент
             continue
         articles.append({
             "title": title, "url": url,

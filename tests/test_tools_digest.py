@@ -124,14 +124,14 @@ def _prep(n):
 _TOOLS_RAW = json.dumps({
     "title": "Инструменты недели",
     "items": [
-        {"name": "Tool A", "url": "https://github.com/a/a",
+        {"name": "Tool A", "url": "https://github.com/a/tool-0",
          "category": "CLI", "platforms": "macOS, Linux", "free_tier": "open-source",
          "desc": "Быстро чистит папки проектов от артефактов сборки.",
-         "limits": "Нужен Python 3.8+", "proof_url": "https://github.com/a/a#readme",
+         "limits": "Нужен Python 3.8+", "proof_url": "https://github.com/a/tool-0#readme",
          "verdict": "ok"},
-        {"name": "Tool B", "url": "https://b.dev", "category": "Web",
+        {"name": "Tool B", "url": "https://x.dev/app-1", "category": "Web",
          "platforms": "Web", "free_tier": "free tier",
-         "desc": "Сканер безопасности.", "limits": "", "proof_url": "https://b.dev/docs",
+         "desc": "Сканер безопасности.", "limits": "", "proof_url": "https://x.dev/app-1/docs",
          "verdict": "uncertain"},
         {"name": "Tool C", "url": "https://c.app", "category": "Web",
          "platforms": "Web", "free_tier": "не проверено",
@@ -248,7 +248,12 @@ def test_get_or_build_tools_cache_and_seen():
     client = _fake_client(_TOOLS_RAW)
 
     def fresh_cands(hours, **kw):
-        return [_fake_article(f"https://new{i}.example/1", i) for i in range(6)]
+        # кандидаты включают url'ы из _TOOLS_RAW, чтобы AI-пункты прошли
+        # provenance-проверку, плюс лишние, которые AI не взял
+        base = [_fake_article("https://github.com/a/tool-0", 0),
+                _fake_article("https://x.dev/app-1", 1)]
+        return base + [_fake_article(f"https://new{i}.example/1", i)
+                       for i in range(2, 6)]
 
     with patch.object(tools_digest, "collect_tools", side_effect=fresh_cands) as ct, \
          patch.object(tools_digest.news_pipeline, "extract_full_text", return_value=None), \
@@ -271,3 +276,92 @@ def test_get_or_build_tools_cache_and_seen():
         msgs3 = tools_digest.get_or_build_tools(store, 24, client)
     # все кандидаты уже показаны → явное сообщение, а не пустой пост
     assert msgs3 == ["Инструментов не нашлось — попробуй: /tools 720"]
+
+
+# --- final-review fix pass (findings from the branch review) ---
+
+def test_tool_score_matches_word_forms():
+    """Stem keywords must match natural word forms ('утилита', 'бесплатная') —
+    reviewer finding: _kw_matches with \\b...\\b never matched stems."""
+    import tools_digest
+    assert tools_digest._stem_matches("утилит", "бесплатная утилита для CLI") is True
+    assert tools_digest._stem_matches("бесплатн", "бесплатный доступ") is True
+    assert tools_digest._stem_matches("расширени", "расширение браузера") is True
+    assert tools_digest._stem_matches("утилита", "кино вечер") is False
+    assert tools_digest._tool_score({"title": "Tool", "summary": "бесплатная утилита"}) > 0
+
+
+def test_select_tools_coerces_malformed_items():
+    """Valid JSON with one item missing 'desc' and a non-dict item must not
+    burn the run: items coerced to full string dicts, junk dropped."""
+    import tools_digest
+    raw = json.dumps({
+        "title": "T",
+        "items": [
+            {"name": "A", "url": "https://github.com/a/tool-0",
+             "category": "CLI", "verdict": "ok"},  # нет desc/platforms/...
+            "junk string item",  # не dict — выбрасывается
+        ]}, ensure_ascii=False)
+    cands = _prep(8)
+    result = tools_digest.select_tools(cands, _fake_client(raw))
+    assert result["mode"] == "ai"
+    item = result["items"][0]
+    assert item["desc"] == "" and item["platforms"] == ""
+    tools_digest.render_tools_post(result)  # не должен упасть
+    tools_digest.build_tools_messages(result)
+
+
+def test_select_tools_items_dict_falls_back():
+    """items as dict (not list) → garbage → fallback, not AttributeError."""
+    import tools_digest
+    raw = json.dumps({"title": "T", "items": {"a": 1}}, ensure_ascii=False)
+    result = tools_digest.select_tools(_prep(4), _fake_client(raw))
+    assert result["mode"] == "fallback"
+
+
+def test_select_tools_drops_fabricated_url():
+    """AI item with a url that is not one of the candidates → dropped
+    (anti-hallucination provenance check)."""
+    import tools_digest
+    raw = json.dumps({
+        "title": "T",
+        "items": [
+            {"name": "Real", "url": "https://github.com/a/tool-0",
+             "category": "CLI", "platforms": "Web", "free_tier": "open-source",
+             "desc": "d", "limits": "", "proof_url": "", "why": "w",
+             "verdict": "ok"},
+            {"name": "Fake", "url": "https://fabricated.example/tool",
+             "category": "Web", "platforms": "Web", "free_tier": "free",
+             "desc": "d", "limits": "", "proof_url": "", "why": "",
+             "verdict": "ok"},  # ссылки на кандидата нет — выкинуть
+        ]}, ensure_ascii=False)
+    result = tools_digest.select_tools(_prep(8), _fake_client(raw))
+    names = [it["name"] for it in result["items"]]
+    assert "Fake" not in names and "Real" in names
+
+
+def test_render_tools_notes_has_item_status_and_free_tier():
+    """Spec §3.4 block 3: per-item status, free tier, limits, why."""
+    import tools_digest
+    result = {"title": "T", "mode": "ai", "notes": "черновик",
+              "items": [{"name": "A", "url": "https://a.example", "category": "CLI",
+                         "platforms": "Web", "free_tier": "open-source",
+                         "desc": "d", "limits": "Нужен Python",
+                         "proof_url": "", "why": "можно применить сразу",
+                         "verdict": "ok"}]}
+    notes = tools_digest.render_tools_notes(result)
+    assert "проверен" in notes
+    assert "open-source" in notes
+    assert "Нужен Python" in notes
+    assert "можно применить сразу" in notes
+
+
+def test_render_tools_post_kept_uncertain_reworded():
+    """The warning no longer promises 'only checked will be shown' while the
+    code renders every item — wording matches behavior."""
+    import tools_digest
+    uncertain = dict(_ok_item(), verdict="uncertain")
+    result = {"title": "T", "mode": "ai", "notes": "n", "items": [uncertain]}
+    post = tools_digest.render_tools_post(result)
+    assert "недостаточно" in post
+    assert "покажу только их" not in post

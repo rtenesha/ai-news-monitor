@@ -28,11 +28,18 @@ TOOL_KEYWORDS = KEYWORDS + [
 TOOL_KEYWORD_WEIGHTS = {"Show HN": 3, "CLI": 2, "утилит": 2, "бесплатн": 1}
 
 
+def _stem_matches(stem: str, text: str) -> bool:
+    """Prefix match: left word boundary, no trailing one — so stems like
+    «утилит» also match «утилита», «утилиты» (notifier._kw_matches is an
+    exact-word match and never fires for Russian stems)."""
+    return bool(re.search(r'\b' + re.escape(stem.lower()) + r'\w*', text))
+
+
 def _tool_score(article: dict) -> int:
     text = (article["title"] + " " + article["summary"]).lower()
     score = 0
     for kw in TOOL_KEYWORDS:
-        if _kw_matches(kw, text):
+        if _stem_matches(kw, text):
             score += TOOL_KEYWORD_WEIGHTS.get(kw, 1)
     return score
 
@@ -169,12 +176,26 @@ def select_tools(candidates: list[dict], client=None) -> dict:
         print(f"Tools AI error: {e}")
         parsed = None
     if parsed and parsed.get("items"):
-        items = [it for it in parsed["items"] if it.get("verdict") != "wrong"][:5]
+        # provenance check: ссылка должна указывать на одного из кандидатов —
+        # выдуманный url от модели считается wrong и выбрасывается кодом
+        cand_norm = {normalize_url(c["url"]) for c in candidates if c.get("url")}
+        items, rejected = [], []
+        for it in parsed["items"]:
+            if it.get("verdict") == "wrong":
+                if it.get("url"):
+                    rejected.append(it["url"])
+                continue
+            norm = normalize_url(str(it.get("url") or ""))
+            if not norm or norm not in cand_norm:
+                if it.get("url"):
+                    rejected.append(it["url"])
+                continue
+            items.append(_normalize_item(it))
+        items = items[:5]
         if items:
             # wrong-пункты выброшены из поста, но их url запоминаем — чтобы
             # get_or_build_tools исключил их из следующих прогонов.
-            parsed["rejected"] = [it.get("url") for it in parsed["items"]
-                                  if it.get("verdict") == "wrong" and it.get("url")]
+            parsed["rejected"] = rejected
             parsed["items"] = items
             parsed["mode"] = "ai"
             return parsed
@@ -182,7 +203,8 @@ def select_tools(candidates: list[dict], client=None) -> dict:
 
 
 def _parse_tools_json(raw: str) -> Optional[dict]:
-    """Strip code fences, find the outermost JSON object, parse it."""
+    """Strip code fences, find the outermost JSON object, parse it.
+    Schema guard: items must be a list (garbage shape → None → fallback)."""
     if not raw:
         return None
     text = raw.strip()
@@ -196,9 +218,27 @@ def _parse_tools_json(raw: str) -> Optional[dict]:
     if start == -1 or end <= start:
         return None
     try:
-        return _json.loads(text[start:end + 1])
+        parsed = _json.loads(text[start:end + 1])
     except Exception:
         return None
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("items"), list):
+        return None
+    parsed["items"] = [it for it in parsed["items"] if isinstance(it, dict)]
+    return parsed
+
+
+_ITEM_FIELDS = ("name", "url", "category", "platforms", "free_tier",
+                "desc", "limits", "proof_url", "why")
+
+
+def _normalize_item(it: dict) -> dict:
+    """Coerce every field to str with a default, so a missing key can't
+    burn the run later in rendering (same idea as notifier.generate_digest)."""
+    item = {f: (it.get(f) if isinstance(it.get(f), str) else str(it.get(f, "")))
+            for f in _ITEM_FIELDS}
+    verdict = it.get("verdict")
+    item["verdict"] = verdict if verdict in ("ok", "uncertain", "wrong") else "uncertain"
+    return item
 
 
 def _fallback_tools(candidates: list[dict]) -> dict:
@@ -213,16 +253,17 @@ def _fallback_tools(candidates: list[dict]) -> dict:
             "mode": "fallback"}
 
 def render_tools_post(result: dict) -> str:
-    parts = [f"<b>{html.escape(result['title'])}</b>"]
-    checked = [it for it in result["items"] if it["verdict"] != "wrong"]
+    parts = [f"<b>{html.escape(str(result.get('title') or ''))}</b>"]
+    checked = [it for it in result.get("items", []) if it.get("verdict") == "ok"]
     if len(checked) < 3:
-        parts.append("⚠️ Проверенных инструментов недостаточно — покажу только их:")
-    for it in result["items"]:
+        parts.append("⚠️ Полностью проверенных инструментов недостаточно — "
+                     "остальные с пометкой «требует уточнения» нужно проверить руками:")
+    for it in result.get("items", []):
         url = it.get("url") or ""
-        name = f'› <a href="{html.escape(url, quote=True)}">{html.escape(it["name"])}</a>'
-        line = f"{name} [{html.escape(it.get('platforms') or '')}] — {html.escape(it['desc'])}"
+        name = f'› <a href="{html.escape(url, quote=True)}">{html.escape(str(it.get("name") or ""))}</a>'
+        line = f"{name} [{html.escape(str(it.get('platforms') or ''))}] — {html.escape(str(it.get('desc') or ''))}"
         if it.get("limits"):
-            line += f" (⚠️ {html.escape(it['limits'])})"
+            line += f" (⚠️ {html.escape(str(it['limits']))})"
         if it.get("verdict") == "uncertain":
             line += "\n<i>требует уточнения</i>"
         parts.append(line)
@@ -231,13 +272,23 @@ def render_tools_post(result: dict) -> str:
 
 def render_tools_sources(result: dict) -> str:
     lines = ["🔎 <b>Источники проверки</b>"]
-    for it in result["items"]:
-        lines.append(f"• {html.escape(it['name'])}: {html.escape(it.get('proof_url') or it['url'])}")
+    for it in result.get("items", []):
+        lines.append(f"• {html.escape(str(it.get('name') or ''))}: "
+                     f"{html.escape(it.get('proof_url') or it.get('url') or '')}")
     return "\n".join(lines)
 
 
 def render_tools_notes(result: dict) -> str:
     notes = [html.escape(result.get("notes") or "—")]
+    for it in result.get("items", []):
+        status = "проверен" if it.get("verdict") == "ok" else "требует уточнения"
+        free_tier = it.get("free_tier") or "не проверено"
+        notes.append(f"• {html.escape(str(it.get('name') or ''))} — {status}, "
+                     f"бесплатность: {html.escape(str(free_tier))}")
+        if it.get("limits"):
+            notes.append(f"  ограничение: {html.escape(str(it['limits']))}")
+        if it.get("why"):
+            notes.append(f"  почему включён: {html.escape(str(it['why']))}")
     if result.get("mode") == "fallback":
         notes.append("Режим без AI: не делай выводов о бесплатности без проверки.")
     return "\n".join(notes)

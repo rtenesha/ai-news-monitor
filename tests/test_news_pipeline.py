@@ -629,3 +629,19 @@ def test_fetch_awesome_lists_never_raises_and_tracks_health():
     with patch.object(news_pipeline.urllib.request, "urlopen",
                       side_effect=OSError("down")):
         assert news_pipeline.fetch_awesome_lists(24) == []
+
+
+def test_parse_awesome_markdown_tolerates_weird_lines():
+    """Review Focus #2: emoji-leading lines, no-bullet lines, image markup —
+    valid [name](https-url) pairs are taken, parser never breaks."""
+    import news_pipeline
+    md = ("🚀 [Rocket Tool](https://r.dev) — ракета сборки\n"
+          "- 🎯 [Dashed Tool](https://d.dev) — дэшборд\n"
+          "- [![](thumb.png)](https://pic.dev) — вложенная картинка\n"
+          "Just [Plain Tool](https://p.dev) без маркера\n")
+    arts = news_pipeline._parse_awesome_markdown(md)
+    urls = [a["url"] for a in arts]
+    assert "https://r.dev" in urls
+    assert "https://d.dev" in urls
+    assert "https://p.dev" in urls
+    assert "https://pic.dev" not in urls  # ссылка-картинка пропущена
