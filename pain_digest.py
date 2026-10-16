@@ -229,6 +229,45 @@ def attach_comments(discussions: list[dict]) -> list[dict]:
     return discussions
 
 
+# --- Fragments ------------------------------------------------------------
+
+_PAIN_MARKERS = re.compile(
+    r"\?|how do (you|i)|does anyone|any(one|body) (else )?know|is there a way|"
+    r"can('t|not|'t get)|stuck|struggling|confus|frustrat|annoying|problem is|"
+    r"the hard part|pain point|regression|wasted (hours|days)|wish.*handled|"
+    r"what do you (use|recommend)|recommendat", re.I)
+
+FRAGMENT_CAP = 50
+FRAGMENT_TEXT_MAX = 400
+
+
+def _fragment(disc: dict, text: str, kind: str, comment_url: str) -> dict:
+    return {
+        "text": (text or "").strip()[:FRAGMENT_TEXT_MAX],
+        "source": "HN" if disc.get("hn_id") is not None else "Reddit",
+        "discussion_url": disc["url"],
+        "discussion_title": disc["title"],
+        "comment_url": comment_url,
+        "kind": kind,
+    }
+
+
+def extract_fragments(discussions: list[dict]) -> list[dict]:
+    """Post bodies всегда, комментарии — по маркер-регексу; кап 50 по порядку."""
+    fragments: list[dict] = []
+    for disc in discussions:
+        if disc.get("summary"):
+            fragments.append(_fragment(disc, disc["summary"], "post", disc["url"]))
+        for comment in disc.get("_comments") or []:
+            if not _PAIN_MARKERS.search(comment.get("text", "")):
+                continue
+            fragments.append(_fragment(disc, comment["text"],
+                                       "comment", comment["comment_url"]))
+        if len(fragments) >= FRAGMENT_CAP:
+            break
+    return fragments[:FRAGMENT_CAP]
+
+
 # --- Reddit: JSON-based discussion collector ------------------------------
 
 def _reddit_new_json(sub: str, hours: int) -> Optional[dict]:

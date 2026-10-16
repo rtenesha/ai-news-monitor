@@ -145,3 +145,39 @@ def test_fetch_reddit_comments_parses_json_and_403_disables():
     with patch.object(pain_digest, "_reddit_get_json", return_value=None), \
          patch.object(pain_digest, "time_sleep"):
         assert pain_digest.fetch_reddit_comments(disc) == []
+
+
+# --- Task 3: fragments -----------------------------------------------------
+
+def _disc_with_comments(title, summary, comments):
+    return {"title": title, "url": f"https://news.ycombinator.com/item?id={abs(hash(title)) % 10**6}",
+            "summary": summary, "source": "Hacker News", "published": None,
+            "score": 100, "num_comments": None, "hn_id": abs(hash(title)) % 10**6,
+            "reddit_fullname": None, "_story": {"id": 1, "kids": []},
+            "_permalink": None, "_comments": comments}
+
+
+def test_extract_fragments_markers_posts_and_cap():
+    import pain_digest
+    q = {"text": "is there a way to roll back the changes?",
+         "comment_url": "https://news.ycombinator.com/item?id=1", "depth": 0,
+         "source": "HN", "discussion_url": "https://news.ycombinator.com/item?id=7"}
+    plain = {"text": "great work, shipped it today",
+             "comment_url": "https://news.ycombinator.com/item?id=2", "depth": 0,
+             "source": "HN", "discussion_url": "https://news.ycombinator.com/item?id=7"}
+    d1 = _disc_with_comments("Ask HN: how do I keep my agent in scope",
+                             "how do I keep the agent from touching extra files?", [q, plain])
+    got = pain_digest.extract_fragments([d1])
+    kinds = {(f["kind"], f["comment_url"]) for f in got}
+    assert ("comment", q["comment_url"]) in kinds
+    assert ("comment", plain["comment_url"]) not in kinds
+    assert ("post", d1["url"]) in kinds                      # самопост — всегда фрагмент
+    assert all(len(f["text"]) <= pain_digest.FRAGMENT_TEXT_MAX for f in got)
+    assert all(f["discussion_title"] == d1["title"] for f in got)
+    # кап: 3 обсуждения по 20 комментариев → 60 → 50
+    many = _disc_with_comments("title LLM agent", "post body",
+                               [{"text": f"how do you test {i}?",
+                                 "comment_url": f"https://x/{i}", "depth": 0,
+                                 "source": "HN", "discussion_url": "https://x/d"} for i in range(20)])
+    got2 = pain_digest.extract_fragments([many, dict(many), dict(many)])
+    assert len(got2) == pain_digest.FRAGMENT_CAP
