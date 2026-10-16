@@ -98,16 +98,141 @@ def _pain_score(article: dict) -> int:
     return score
 
 
-# --- Reddit: JSON-based discussion collector ------------------------------
+# --- Comment fetchers -----------------------------------------------------
 
-def _reddit_new_json(sub: str, hours: int) -> Optional[dict]:
-    url = f"https://www.reddit.com/r/{sub}/new.json?limit=50"
+_HN_ENTITIES = [("&#x27;", "'"), ("&#x2F;", "/"), ("&gt;", ">"), ("&lt;", "<"),
+                ("&quot;", '"'), ("&amp;", "&")]
+
+
+def strip_html(text: str) -> str:
+    s = str(text or "")
+    for ent, ch in _HN_ENTITIES:
+        s = s.replace(ent, ch)
+    s = re.sub(r"<[^>]+>", " ", s)
+    return " ".join(s.split())
+
+
+def _hn_visit(cid: str, depth: int, out: list[dict], budget: list[int]) -> None:
+    comment = _hn_get_json(f"item/{cid}.json")
+    if not comment or comment.get("deleted") or comment.get("dead"):
+        return
+    budget[0] -= 1
+    text = strip_html(comment.get("text", ""))[:500]
+    if text:
+        out.append({
+            "text": text,
+            "comment_url": f"https://news.ycombinator.com/item?id={cid}",
+            "depth": depth,
+            "source": "HN",
+            "discussion_url": "",
+        })
+    for kid in (comment.get("kids") or [])[:2]:
+        if budget[0] <= 0:
+            break
+        _hn_visit(kid, depth + 1, out, budget)
+
+
+def fetch_hn_comments(disc: dict, max_comments: int = 40) -> list[dict]:
+    """BFS по kids: 12 веток, 2 уровня, кап 40 (deleted/dead/пустые — пропуск)."""
+    story = disc.get("_story") or {}
+    out: list[dict] = []
+    budget = [max_comments]
+    for kid in (story.get("kids") or [])[:12]:
+        if budget[0] <= 0:
+            break
+        _hn_visit(kid, 0, out, budget)
+    for c in out:
+        c["discussion_url"] = disc["url"]
+    return out
+
+
+def _reddit_get_json(url: str) -> Optional[Any]:
+    """GET Reddit JSON, никогда не кидает исключение; статус последней
+    HTTP-ошибки остаётся в _reddit_last_status (403 включает деградацию)."""
+    global _reddit_last_status
+    _reddit_last_status = None
     try:
         req = urllib.request.Request(url, headers={"User-Agent": _BROWSER_UA})
         with urllib.request.urlopen(req, timeout=15) as resp:
             return _json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        _reddit_last_status = e.code
+        return None
     except Exception:
         return None
+
+
+def _reddit_failed() -> bool:
+    """Payload не пришёл из-за 403 — Reddit API недоступен этим ключом."""
+    return _reddit_last_status == 403
+
+
+def fetch_reddit_comments(disc: dict, max_comments: int = 30) -> list[dict]:
+    """Comments via keyless /comments/<id>.json; недоступен → [] (и лог один раз)."""
+    global _REDDIT_JSON_DISABLED
+    if _REDDIT_JSON_DISABLED:
+        return []
+    perm = disc.get("_permalink")
+    if not perm:
+        return []
+    payload = _reddit_get_json(f"https://www.reddit.com{perm}.json")
+    if not isinstance(payload, list) or len(payload) < 2:
+        if _reddit_failed():
+            _REDDIT_JSON_DISABLED = True
+        return []
+    out: list[dict] = []
+    def add(data: dict, depth: int) -> None:
+        text = strip_html(data.get("body", ""))[:500]
+        if not text or len(out) >= max_comments:
+            return
+        out.append({
+            "text": text,
+            "comment_url": "https://www.reddit.com" + (data.get("permalink") or perm),
+            "depth": depth,
+            "source": "Reddit",
+            "discussion_url": "https://www.reddit.com" + perm,
+        })
+    children = payload[1].get("data", {}).get("children", [])
+    for ch in children[:max_comments]:
+        if len(out) >= max_comments:
+            break
+        d = ch.get("data", {})
+        add(d, 0)
+        replies = d.get("replies")
+        if isinstance(replies, dict):
+            for rc in replies.get("data", {}).get("children", []):
+                if len(out) >= max_comments:
+                    break
+                add((rc.get("data") or {}), 1)
+    return out
+
+
+_reddit_last_status: Optional[int] = None
+
+
+def attach_comments(discussions: list[dict]) -> list[dict]:
+    """К каждому обсуждению — _comments; HN параллельно, Reddit с паузами."""
+    hn = [d for d in discussions if d.get("hn_id") is not None]
+    reddit = [d for d in discussions if d.get("reddit_fullname") is not None]
+    if hn:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            results = list(pool.map(fetch_hn_comments, hn))
+        for d, comments in zip(hn, results):
+            d["_comments"] = comments
+    for i, d in enumerate(reddit):
+        if i:
+            time_sleep(2)
+        try:
+            d["_comments"] = fetch_reddit_comments(d)
+        except Exception:
+            d["_comments"] = []
+    return discussions
+
+
+# --- Reddit: JSON-based discussion collector ------------------------------
+
+def _reddit_new_json(sub: str, hours: int) -> Optional[dict]:
+    return _reddit_get_json(f"https://www.reddit.com/r/{sub}/new.json?limit=50")
 
 
 def _fetch_reddit_discussions(hours: int) -> list[dict]:
@@ -123,6 +248,9 @@ def _fetch_reddit_discussions(hours: int) -> list[dict]:
             time_sleep(2)  # Reddit 429s on burst requests
         data = _reddit_new_json(sub, hours)
         if data is None:
+            if _reddit_failed():
+                _REDDIT_JSON_DISABLED = True  # 403: Reddit API недоступен этим ключом
+                break
             continue
         for child in data.get("data", {}).get("children", []):
             post = child.get("data", {})
