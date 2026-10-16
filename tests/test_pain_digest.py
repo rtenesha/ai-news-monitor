@@ -4,6 +4,8 @@ from unittest.mock import patch
 
 import pytest
 
+import json as _json
+
 import news_pipeline
 
 
@@ -181,3 +183,116 @@ def test_extract_fragments_markers_posts_and_cap():
                                  "source": "HN", "discussion_url": "https://x/d"} for i in range(20)])
     got2 = pain_digest.extract_fragments([many, dict(many), dict(many)])
     assert len(got2) == pain_digest.FRAGMENT_CAP
+
+
+# --- Task 4: AI analysis ---------------------------------------------------
+
+def _fake_client(content: str):
+    """Minimal Groq client stand-in, same pattern as test_tools_digest."""
+    class _Message:
+        def __init__(self, c): self.content = c
+
+    class _Choice:
+        def __init__(self, c): self.message = _Message(c)
+
+    class _Resp:
+        def __init__(self, c): self.choices = [_Choice(c)]
+
+    class _Completions:
+        @staticmethod
+        def create(**kwargs):
+            return _Resp(content)
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Client:
+        chat = _Chat()
+
+    return _Client()
+
+
+def _frags():
+    a = {"text": "is there a way to run the agent offline?",
+         "source": "HN", "discussion_url": "https://news.ycombinator.com/item?id=11",
+         "discussion_title": "Ask HN: agent offline?", "comment_url": "https://x/c1",
+         "kind": "comment"}
+    b = {"text": "context runs out too fast, struggling with long edits",
+         "source": "Reddit", "discussion_url": "https://www.reddit.com/r/xyz/1",
+         "discussion_title": "t", "comment_url": "https://www.reddit.com/r/xyz/1/a1",
+         "kind": "comment"}
+    return [a, b]
+
+
+def _cards_raw(cards):
+    return _json.dumps({"cards": cards, "notes": "n"})
+
+
+def test_analyze_provenance_fabricated_quote_dropped():
+    import pain_digest
+    frags = _frags()
+    ok_card = {"problem": "Контекст кончается",
+               "category": "контекст/память", "essence": "жалуются на контекст",
+               "hook": "хук", "content_angle": "разбор",
+               "solution_status": "предложено",
+               "potential": "живая боль",
+               "evidence": [{"source": "Reddit",
+                             "discussion_url": "https://www.reddit.com/r/xyz/1",
+                             "comment_url": "https://www.reddit.com/r/xyz/1/a1",
+                             "quote": "struggling with long edits"}]}
+    bad_card = dict(ok_card)
+    bad_card["evidence"] = [{"source": "HN",
+                             "discussion_url": "https://news.ycombinator.com/item?id=99",
+                             "comment_url": "https://news.ycombinator.com/item?id=404",
+                             "quote": "неизвестная выдуманная цитата"}]
+    res = pain_digest.analyze_fragments(frags, _fake_client(_cards_raw([ok_card, bad_card])))
+    assert res["mode"] == "ai"
+    assert [c["problem"] for c in res["cards"]] == ["Контекст кончается"]
+
+    # цитата есть, но url не из переданного набора → карточка выброшена
+    forged = dict(bad_card)
+    forged["evidence"] = [{"source": "HN",
+                           "discussion_url": "https://news.ycombinator.com/item?id=11",
+                           "comment_url": "https://news.ycombinator.com/item?id=11",
+                           "quote": "выдумка"}]
+    res2 = pain_digest.analyze_fragments(frags, _fake_client(_cards_raw([forged])))
+    assert res2["cards"] == []
+
+
+def test_analyze_normalizes_unknown_category_and_recounts_evidence():
+    import pain_digest
+    frags = _frags()
+    card = {"problem": "p", "category": "квант", "essence": "e", "hook": "h",
+            "content_angle": "инструкция", "solution_status": "мб",
+            "potential": "pot",
+            "evidence": [{"source": "HN", "discussion_url": "https://d1",
+                          "comment_url": "https://x/c1", "quote": "is there a way"},
+                         {"source": "Reddit", "discussion_url": "https://d1",
+                          "comment_url": "https://www.reddit.com/r/xyz/1/a1",
+                          "quote": "struggling with long edits"},
+                         {"source": "HN", "discussion_url": "https://d2",
+                          "comment_url": "https://x/c1", "quote": "is there a way"}]}
+    res = pain_digest.analyze_fragments(frags, _fake_client(_cards_raw([card])))
+    c = res["cards"][0]
+    assert c["category"] == "другое"
+    assert c["solution_status"] == "не найдено"
+    assert c["evidence_count"] == 2        # уникальные discussion_url, не 3
+    assert c["single"] is False
+
+
+def test_analyze_caps_six_cards_and_fallback_without_client():
+    import pain_digest
+    frags = _frags()
+    card_tmpl = {"problem": "p{i}", "category": "выбор инструмента",
+                 "essence": "e", "hook": "h", "content_angle": "разбор",
+                 "solution_status": "предложено", "potential": "pot",
+                 "evidence": [{"source": "HN", "discussion_url": "https://d1",
+                               "comment_url": "https://x/c1", "quote": "is there a way"}]}
+    cards = [dict(card_tmpl, problem=f"p{i}") for i in range(8)]
+    res = pain_digest.analyze_fragments(frags, _fake_client(_cards_raw(cards)))
+    assert len(res["cards"]) == 6
+    res2 = pain_digest.analyze_fragments(frags, None)
+    assert res2["mode"] == "fallback" and res2["cards"] == []
+    # мусорная структура JSON → фолбэк, не краш
+    res3 = pain_digest.analyze_fragments(frags, _fake_client("[1,2,3]"))
+    assert res3["mode"] == "fallback"

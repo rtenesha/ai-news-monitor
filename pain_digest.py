@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
 import news_pipeline
+import notifier
 from notifier import KEYWORDS, HIGH_VALUE, _kw_matches
 from tools_digest import _stem_matches
 
@@ -266,6 +267,163 @@ def extract_fragments(discussions: list[dict]) -> list[dict]:
         if len(fragments) >= FRAGMENT_CAP:
             break
     return fragments[:FRAGMENT_CAP]
+
+
+# --- AI analysis -----------------------------------------------------------
+
+_PAIN_CATEGORIES = ("выбор инструмента", "агент не контролируется",
+                    "контекст/память", "деплой", "ошибка/не работает",
+                    "стоимость", "безопасность", "обучение", "другое")
+PAIN_CATEGORIES = _PAIN_CATEGORIES
+_SOLUTION_STATUSES = ("подтверждено", "предложено", "не найдено")
+_PAIN_AI_MODEL = "openai/gpt-oss-120b"
+_MAX_CARDS = 6
+
+_PAIN_SYSTEM_RULES = """Ты редактор Telegram-канала о ИИ и вайбкодинге. Ищешь в обсуждениях (комментарии Hacker News и Reddit) проблемы и запросы аудитории и группируешь их в карточки редакционных возможностей.
+
+Правила:
+- Карточка описывает конкретную боль или запрос, а не тему.
+- Цитаты брать ТОЛЬКО дословными обрезками из переданных фрагментов, без пересказа и выдумывания. Ссылки на обсуждения и комментарии — только из переданного набора.
+- Ничего не выдумывать: если фрагменты не дают материала под категорию/решение — пиши честный статус («не найдено»).
+- problem/essence/hook/potential — по-русски, простыми словами, коротко. Цитаты оставляй на языке источника.
+- Группируй похожие боли из разных обсуждений в одну карточку, если это одна проблема.
+- 10 комментариев в одной ветке — не 10 независимых подтверждений; уникальность считается по обсуждению.
+""" + notifier._NATURAL_TEXT_RULES
+
+_PAIN_PROMPT = """Вот фрагменты обсуждений за окно. Отбери и сгруппируй до 6 проблем аудитории. Ответ — строго JSON, без markdown-обёртки:
+
+{{"cards": [
+  {{"problem": "короткое имя проблемы (по-русски)",
+    "category": "одна из: выбор инструмента | агент не контролируется | контекст/память | деплой | ошибка/не работает | стоимость | безопасность | обучение | другое",
+    "essence": "суть 2-3 предложения: что спрашивают и почему это боль",
+    "hook": "вариант хука для поста",
+    "content_angle": "инструкция | разбор | сравнение | эксперимент | дискуссия",
+    "solution_status": "подтверждено | предложено | не найдено",
+    "potential": "почему это зайдёт аудитории, 1 предложение",
+    "evidence": [
+      {{"source": "HN|Reddit", "discussion_url": "...", "comment_url": "...", "quote": "дословная обрезка ≤200 зн из соответствующего фрагмента"}}]}}],
+ "notes": "краткие редакторские примечания"}}
+
+Фрагменты:
+{frags}"""
+
+
+def _parse_pain_json(raw: str) -> Optional[dict]:
+    """Strip code fences, find outermost JSON object, parse it.
+    Schema guard: cards must be a list (garbage shape → None → fallback)."""
+    if not raw:
+        return None
+    text = raw.strip()
+    if "```" in text:
+        parts = text.split("```")
+        text = parts[1] if len(parts) > 1 else text
+        if text.startswith("json"):
+            text = text[4:]
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    try:
+        parsed = _json.loads(text[start:end + 1])
+    except Exception:
+        return None
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("cards"), list):
+        return None
+    parsed["cards"] = [c for c in parsed["cards"] if isinstance(c, dict)]
+    return parsed
+
+
+def _norm_quote(text: str) -> str:
+    return " ".join(str(text or "").split())
+
+
+def _normalize_card(card: dict, frag_index: dict) -> Optional[dict]:
+    """Coerce fields, validate category/status/провенанс.
+    Карточка с невалидным evidence отбрасывается (None)."""
+    evidence = card.get("evidence")
+    if not isinstance(evidence, list):
+        return None
+    cleaned = []
+    for e in evidence:
+        if not isinstance(e, dict):
+            return None
+        comment_url = str(e.get("comment_url") or "")
+        frag = frag_index.get(comment_url)
+        if frag is None:
+            return None
+        if _norm_quote(e.get("quote")) not in _norm_quote(frag["text"]):
+            return None
+        cleaned.append({"source": str(e.get("source") or frag["source"]),
+                        "discussion_url": str(e.get("discussion_url") or frag["discussion_url"]),
+                        "comment_url": comment_url,
+                        "quote": _norm_quote(e.get("quote"))[:200]})
+    category = str(card.get("category") or "").strip()
+    status = str(card.get("solution_status") or "").strip()
+    return {
+        "problem": str(card.get("problem") or "")[:200],
+        "category": category if category in _PAIN_CATEGORIES else "другое",
+        "essence": str(card.get("essence") or ""),
+        "hook": str(card.get("hook") or ""),
+        "content_angle": str(card.get("content_angle") or "разбор"),
+        "solution_status": status if status in _SOLUTION_STATUSES else "не найдено",
+        "potential": str(card.get("potential") or ""),
+        "evidence": cleaned,
+    }
+
+
+def analyze_fragments(fragments: list[dict], client=None) -> dict:
+    """One Groq call over fragments → ≤6 problem cards with provenance.
+    No client or bad structure → fallback list."""
+    if not client or not fragments:
+        return _fallback_cards(fragments)
+    frag_index = {f["comment_url"]: f for f in fragments}
+    frag_lines = []
+    for f in fragments:
+        frag_lines.append(
+            f"- {f['source']} | {f['discussion_title']}\n"
+            f"  discussion_url: {f['discussion_url']} | comment_url: {f['comment_url']}\n"
+            f"  текст: {f['text']}")
+    prompt = _PAIN_PROMPT.format(frags="\n".join(frag_lines))
+    try:
+        response = client.chat.completions.create(
+            model=_PAIN_AI_MODEL, reasoning_effort="low",
+            messages=[
+                {"role": "system", "content": _PAIN_SYSTEM_RULES},
+                {"role": "user", "content": prompt},
+            ], temperature=0.2)
+        parsed = _parse_pain_json(response.choices[0].message.content)
+    except Exception as e:
+        print(f"Pain AI error: {e}")
+        parsed = None
+    if parsed:
+        cards = []
+        for card in parsed["cards"]:
+            normalized = _normalize_card(card, frag_index)
+            if normalized:
+                normalized["evidence_count"] = len({e["discussion_url"] for e in normalized["evidence"]})
+                normalized["single"] = normalized["evidence_count"] == 1
+                cards.append(normalized)
+            if len(cards) >= _MAX_CARDS:
+                break
+        if cards:
+            return {"cards": cards, "notes": str(parsed.get("notes") or ""),
+                    "mode": "ai"}
+    return _fallback_cards(fragments)
+
+
+def _fallback_cards(fragments: list[dict]) -> dict:
+    """No-API mode: bare fragment list with links, no cards."""
+    lines = []
+    for f in fragments[:10]:
+        lines.append(f"- [{f['source']}] {f['discussion_title']}\n"
+                     f"  {f['comment_url'] or f['discussion_url']}\n"
+                     f"  {f['text'][:160]}")
+    if not lines:
+        lines = ["фрагментов не нашлось"]
+    return {"cards": [],
+            "notes": "Фрагменты (режим без AI, суть не классифицирована):\n"
+                     + "\n".join(lines),
+            "mode": "fallback"}
 
 
 # --- Reddit: JSON-based discussion collector ------------------------------
