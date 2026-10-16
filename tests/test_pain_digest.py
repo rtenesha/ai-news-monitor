@@ -296,3 +296,58 @@ def test_analyze_caps_six_cards_and_fallback_without_client():
     # мусорная структура JSON → фолбэк, не краш
     res3 = pain_digest.analyze_fragments(frags, _fake_client("[1,2,3]"))
     assert res3["mode"] == "fallback"
+
+
+# --- Task 5: rendering and statuses ----------------------------------------
+
+def _card(problem, single=False, status="new"):
+    return {"problem": problem, "category": "контекст/память",
+            "essence": "суть", "hook": "хук про <b>жирный</b>",
+            "content_angle": "разбор", "solution_status": "не найдено",
+            "potential": "потенциал",
+            "evidence": [{"source": "HN", "discussion_url": "https://d1",
+                          "comment_url": f"https://news.ycombinator.com/item?id={i}",
+                          "quote": "цитата <script>x</script>"}
+                         for i in range(4)],
+            "evidence_count": 9 if not single else 1,
+            "single": single, "status": status}
+
+
+def test_render_pain_cards_format_and_status():
+    import pain_digest
+    res = {"cards": [_card("Проблема одна"), _card("Единичная", single=True,
+                                                      status="posted")],
+           "notes": "заметки", "mode": "ai"}
+    out = pain_digest.render_pain_cards(res)
+    assert "🎯 <b>1. Проблема одна</b>" in out
+    assert "обсуждений: 9" in out and "решения нет" in out
+    assert "пока единичное" in out
+    assert "Статус: опубликована" in out
+    # не больше 3 proof-ссылок на карточку
+    blocks = out.split("\n\n")
+    assert blocks[0].count("news.ycombinator.com/item?id=") == 3
+
+
+def test_build_pain_messages_limits_and_escape():
+    import pain_digest
+    card = _card("Инъекция <img src=x onerror=alert(1)>")
+    res = {"cards": [card], "notes": "notes", "mode": "ai"}
+    msgs = pain_digest.build_pain_messages(res)
+    assert msgs and all(len(m) <= 4096 for m in msgs)
+    assert "<img" not in " ".join(msgs)
+    assert "&lt;img" in " ".join(msgs)
+    fb = pain_digest.build_pain_messages({"cards": [], "notes": "", "mode": "fallback"})
+    assert any("режим без AI" in m for m in fb)
+    empty = pain_digest.build_pain_messages({"cards": [], "notes": "", "mode": "ai"})
+    assert len(empty) == 1 and "не нашлось" in empty[0]
+
+
+def test_set_pain_status_validates_number_and_vocab():
+    import pain_digest
+    store = {"pain_display_map": {1: "p3", 2: "p4"},
+             "pain_status": {"p3": "new"}}
+    assert pain_digest.set_pain_status(store, 1, "taken") is None
+    assert store["pain_status"]["p3"] == "taken"
+    assert isinstance(pain_digest.set_pain_status(store, 9, "taken"), str)
+    assert isinstance(pain_digest.set_pain_status(store, 1, "banished"), str)
+    assert isinstance(pain_digest.set_pain_status({"pain_display_map": {}}, 1, "new"), str)

@@ -426,6 +426,72 @@ def _fallback_cards(fragments: list[dict]) -> dict:
             "mode": "fallback"}
 
 
+# --- Rendering and statuses ------------------------------------------------
+
+STATUS_VOCAB = {"new", "taken", "posted", "dropped"}
+_STATUS_LABELS = {"taken": "взята в работу", "posted": "опубликована",
+                  "dropped": "отклонена"}
+
+
+def render_pain_cards(result: dict) -> str:
+    parts: list[str] = []
+    if result.get("mode") == "fallback":
+        parts.append("<i>режим без AI — фрагменты классифицируй вручную.</i>")
+    for i, card in enumerate(result.get("cards", []), start=1):
+        status = card.get("status", "new")
+        head = f"🎯 <b>{i}. {html.escape(str(card.get('problem') or ''))}</b>"
+        line2 = (f"{html.escape(str(card.get('category') or ''))} · "
+                 f"{html.escape(str(card.get('content_angle') or ''))} · "
+                 f"обсуждений: {card.get('evidence_count', 0)}")
+        if card.get("single"):
+            line2 += " · пока единичное"
+        if card.get("solution_status") == "не найдено":
+            line2 += " · решения нет"
+        else:
+            line2 += f" · решение {html.escape(str(card.get('solution_status') or ''))}"
+        parts.append("\n".join([head, line2,
+                                html.escape(str(card.get('essence') or '')),
+                                f"💡 {html.escape(str(card.get('potential') or ''))}",
+                                f"✏️ Хук: «{html.escape(str(card.get('hook') or ''))}»"]))
+        if status in _STATUS_LABELS:
+            parts[-1] += f"\nСтатус: {html.escape(_STATUS_LABELS[status])}"
+        proof = [f'<a href="{html.escape(e["comment_url"], quote=True)}">💬</a>'
+                 for e in (card.get("evidence") or [])[:3]]
+        if proof:
+            parts[-1] += "\n" + " ".join(proof)
+    return "\n\n".join(parts)
+
+
+def render_pain_notes(result: dict) -> str:
+    lines = ["📝 <b>Примечания</b>", html.escape(str(result.get("notes") or "—"))]
+    return "\n".join(lines)
+
+
+def build_pain_messages(result: dict) -> list[str]:
+    """Two blocks for the bot, each ≤ 4096."""
+    from editorial import _split_by_paragraphs
+    if result.get("mode") != "fallback" and not result.get("cards"):
+        return ["Проблем аудитории за окно не нашлось — попробуйте /pain 168"]
+    cards_block = render_pain_cards(result)
+    notes_block = render_pain_notes(result)
+    msgs = _split_by_paragraphs(cards_block) + _split_by_paragraphs(notes_block)
+    return [m if len(m) <= 4096 else m[:4090] + "…" for m in msgs]
+
+
+def set_pain_status(store: dict, number: int, status: str) -> Optional[str]:
+    """Смена статуса карточки по номеру последней отрисовки.
+    Возвращает строку-ошибку или None при успехе."""
+    if status not in STATUS_VOCAB:
+        return f"Неизвестный статус «{status}» (taken | posted | dropped | new)"
+    display_map = store.get("pain_display_map") or {}
+    card_id = display_map.get(number)
+    if not card_id:
+        known = ", ".join(str(n) for n in sorted(display_map)) or "—"
+        return f"Карточки {number} в текущем списке нет (есть: {known})"
+    store.setdefault("pain_status", {})[card_id] = status
+    return None
+
+
 # --- Reddit: JSON-based discussion collector ------------------------------
 
 def _reddit_new_json(sub: str, hours: int) -> Optional[dict]:
