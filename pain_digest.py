@@ -492,6 +492,59 @@ def set_pain_status(store: dict, number: int, status: str) -> Optional[str]:
     return None
 
 
+# --- Cache plumbing --------------------------------------------------------
+
+def _assign_ids(store: dict, cards: list[dict]) -> None:
+    """Permanent ids p1, p2 … (counter survives rebuilds) + display map
+    «номер последней отрисовки → id»."""
+    counter = store.get("pain_counter", 0)
+    display: dict = {}
+    for i, card in enumerate(cards, start=1):
+        counter += 1
+        card["id"] = f"p{counter}"
+        display[i] = card["id"]
+    store["pain_counter"] = counter
+    store["pain_display_map"] = display
+
+
+def _render_messages(store: dict, result: dict) -> list[str]:
+    statuses = store.get("pain_status") or {}
+    for card in result.get("cards", []):
+        card["status"] = statuses.get(card.get("id"), "new")
+    return build_pain_messages(result)
+
+
+def get_or_build_pain(store: dict, hours: int, client=None) -> list[str]:
+    """Cache of the last run in bot_data-shaped dict; builds on miss or
+    window change. seen excludes all AI-evaluated discussions."""
+    if hours < 6:
+        hours = 6
+    if hours > 168:
+        hours = 168
+    cache = store.setdefault("pain_cache", {})
+    if cache and cache.get("hours") == hours:
+        return _render_messages(store, cache["result"])
+    seen = store.setdefault("pain_seen", set())
+    discussions = [d for d in collect_discussions(hours)
+                   if d.get("url") and news_pipeline.normalize_url(d["url"]) not in seen]
+    if not discussions:
+        return ["Проблем аудитории за окно не нашлось — попробуйте /pain 168"]
+    attach_comments(discussions)
+    fragments = extract_fragments(discussions)
+    if not fragments:
+        store["pain_cache"] = {"hours": hours,
+                               "result": {"cards": [], "notes": "", "mode": "ai"}}
+        return ["Проблем аудитории за окно не нашлось — попробуйте /pain 168"]
+    result = analyze_fragments(fragments, client)
+    # seen: все обсуждения, чьи фрагменты ушли на AI (как tools_seen)
+    seen |= {news_pipeline.normalize_url(f["discussion_url"]) for f in fragments}
+    cards = result.get("cards") or []
+    if cards:
+        _assign_ids(store, cards)
+    store["pain_cache"] = {"hours": hours, "result": result}
+    return _render_messages(store, result)
+
+
 # --- Reddit: JSON-based discussion collector ------------------------------
 
 def _reddit_new_json(sub: str, hours: int) -> Optional[dict]:

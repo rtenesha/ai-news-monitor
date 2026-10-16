@@ -351,3 +351,79 @@ def test_set_pain_status_validates_number_and_vocab():
     assert isinstance(pain_digest.set_pain_status(store, 9, "taken"), str)
     assert isinstance(pain_digest.set_pain_status(store, 1, "banished"), str)
     assert isinstance(pain_digest.set_pain_status({"pain_display_map": {}}, 1, "new"), str)
+
+
+# --- Task 6: cache/seen/id plumbing ----------------------------------------
+
+def _disc(url):
+    return {"title": "d", "url": url, "summary": "", "source": "Hacker News",
+            "published": None, "score": 100, "num_comments": None, "hn_id": 1,
+            "reddit_fullname": None, "_story": None, "_permalink": None}
+
+
+def test_get_or_build_pain_cache_seen_and_ids():
+    import pain_digest, news_pipeline
+    store: dict = {}
+    client = _fake_client("will-be-replaced-below")
+
+    counter = {"collect": 0, "analyze": 0}
+
+    def fake_collect(hours):
+        counter["collect"] += 1
+        if counter["collect"] == 1:
+            return [_disc("https://d1")]
+        return [_disc("https://d2")]
+
+    def fake_extract(discs):
+        if any(d["url"] == "https://d1" for d in discs):
+            return [{"text": "is there a way to run the agent offline?",
+                     "source": "HN", "discussion_url": "https://d1",
+                     "discussion_title": "d",
+                     "comment_url": "https://news.ycombinator.com/item?id=c1",
+                     "kind": "comment"}]
+        return [{"text": "how do you test prompts?",
+                 "source": "HN", "discussion_url": "https://d2",
+                 "discussion_title": "d2", "comment_url": "https://x/c2",
+                 "kind": "comment"}]
+
+    def fake_analyze(frags, client=None):
+        counter["analyze"] += 1
+        f = frags[0]
+        cards = [{"problem": f"Проблема #{counter['analyze']}",
+                  "category": "контекст/память", "essence": "суть", "hook": "хук",
+                  "content_angle": "разбор", "solution_status": "предложено",
+                  "potential": "потенциал",
+                  "evidence": [{"source": "HN", "discussion_url": f["discussion_url"],
+                                "comment_url": f["comment_url"],
+                                "quote": f["text"][:20]}]}]
+        return {"cards": cards, "notes": "примечания", "mode": "ai"}
+
+    msgs1 = None
+    with patch.object(pain_digest, "collect_discussions", side_effect=fake_collect), \
+         patch.object(pain_digest, "extract_fragments", side_effect=fake_extract), \
+         patch.object(pain_digest, "analyze_fragments", side_effect=fake_analyze):
+        msgs1 = pain_digest.get_or_build_pain(store, 48, client)
+        assert counter == {"collect": 1, "analyze": 1}
+        assert store["pain_seen"] == {news_pipeline.normalize_url("https://d1")}
+        assert store["pain_display_map"] == {1: "p1"}
+        assert store["pain_counter"] == 1
+        assert store["pain_cache"]["hours"] == 48
+        assert msgs1 and all(len(m) <= 4096 for m in msgs1)
+
+        # то же окно → кэш: ни collect, ни analyze не вызываются заново
+        msgs2 = pain_digest.get_or_build_pain(store, 48, client)
+        assert counter == {"collect": 1, "analyze": 1}
+        assert msgs1 == msgs2
+
+        # другое окно → пересбор; d1 отфильтрован через pain_seen
+        msgs3 = pain_digest.get_or_build_pain(store, 24, client)
+        assert counter == {"collect": 2, "analyze": 2}
+        assert store["pain_seen"] == {news_pipeline.normalize_url("https://d1"),
+                                      news_pipeline.normalize_url("https://d2")}
+        assert store["pain_display_map"] == {1: "p2"}   # id не переиспользуются
+        assert store["pain_counter"] == 2
+
+    # пустой сбор → аккуратная строка, не пустой пост
+    with patch.object(pain_digest, "collect_discussions", return_value=[]):
+        msgs4 = pain_digest.get_or_build_pain(store, 168, None)
+    assert len(msgs4) == 1 and "не нашлось" in msgs4[0]
