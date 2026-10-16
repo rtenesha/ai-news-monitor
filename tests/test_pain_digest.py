@@ -427,3 +427,79 @@ def test_get_or_build_pain_cache_seen_and_ids():
     with patch.object(pain_digest, "collect_discussions", return_value=[]):
         msgs4 = pain_digest.get_or_build_pain(store, 168, None)
     assert len(msgs4) == 1 and "не нашлось" in msgs4[0]
+
+
+# --- Final review fixes ----------------------------------------------------
+
+def test_default_hours_alias_public():
+    """bot.py использует pain_digest.DEFAULT_HOURS — алиас публичного имени."""
+    import pain_digest
+    assert pain_digest.DEFAULT_HOURS == 48
+
+
+def test_cmd_pain_smoke():
+    """cmd_pain не падает на первой строке и доходит до get_or_build_pain."""
+    import asyncio
+    import bot, pain_digest
+
+    sent = []
+
+    class _Msg:
+        async def reply_text(self, t, **kw):
+            sent.append(("text", t))
+
+        async def reply_html(self, m, **kw):
+            sent.append(("html", m))
+
+    class _Upd:
+        message = _Msg()
+
+    class _Ctx:
+        args = []
+        bot_data = {}
+
+    def fake_get(store, hours, client=None):
+        sent.append(("called", hours))
+        return ["<b>ок</b>"]
+
+    with patch.object(pain_digest, "get_or_build_pain", side_effect=fake_get), \
+         patch.object(bot, "_groq_client", return_value=None):
+        asyncio.run(bot.cmd_pain(_Upd(), _Ctx()))
+    sent_types = [s[0] for s in sent]
+    assert "called" in sent_types and ("html", "<b>ок</b>") in sent
+
+
+def test_normalize_card_uses_fragment_discussion_url():
+    """discussion_url доказательства берётся из фрагмента, не из ответа модели:
+    выдуманный url не раздувает «обсуждений: N»."""
+    import pain_digest
+    frags = _frags()
+    card = {"problem": "p", "category": "другое", "essence": "e", "hook": "h",
+            "content_angle": "разбор", "solution_status": "предложено",
+            "potential": "pot",
+            "evidence": [{"source": "HN", "discussion_url": "https://выдумка/1",
+                          "comment_url": "https://x/c1", "quote": "is there a way"},
+                         {"source": "HN", "discussion_url": "https://выдумка/2",
+                          "comment_url": "https://x/c1", "quote": "is there a way"}]}
+    res = pain_digest.analyze_fragments(frags, _fake_client(_cards_raw([card])))
+    assert res["cards"], "валидная цитата+url не должны выбрасывать карточку"
+    c = res["cards"][0]
+    assert c["evidence_count"] == 1          # доказательства одного фрагмента — одно обсуждение
+    assert c["evidence"][0]["discussion_url"] == "https://news.ycombinator.com/item?id=11"
+
+
+def test_hn_visit_stops_at_second_level():
+    """Глубина: ветка → ответ → ответ на ответ; третий уровень не читается."""
+    import pain_digest
+    store = {f"item/{i}.json": {"id": i, "text": f"level {i}", "kids": k}
+             for i, k in ((10, [11]), (11, [12]), (12, []))}
+    disc = {"title": "d", "url": "https://news.ycombinator.com/item?id=9",
+            "summary": "", "source": "Hacker News", "published": None,
+            "score": 100, "num_comments": None, "hn_id": 9,
+            "reddit_fullname": None, "_story": {"id": 9, "kids": [10]},
+            "_permalink": None}
+    with patch.object(pain_digest, "_hn_get_json", side_effect=lambda p: store[p]):
+        comments = pain_digest.fetch_hn_comments(disc)
+    texts = {c["text"] for c in comments}
+    assert "level 10" in texts and "level 11" in texts
+    assert "level 12" not in texts           # третий уровень отрезан

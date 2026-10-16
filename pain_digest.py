@@ -19,6 +19,7 @@ _BROWSER_UA = news_pipeline._BROWSER_UA
 HN_BASE = "https://hacker-news.firebaseio.com/v0"
 
 _DEFAULT_HOURS = 48
+DEFAULT_HOURS = _DEFAULT_HOURS  # публичное имя для bot.py
 PAIN_DISCUSSION_CAP = 16
 REDDIT_DISCUSSION_CAP = 8
 HN_DISCUSSION_CAP = 8
@@ -113,7 +114,8 @@ def strip_html(text: str) -> str:
     return " ".join(s.split())
 
 
-def _hn_visit(cid: str, depth: int, out: list[dict], budget: list[int]) -> None:
+def _hn_visit(cid: str, depth: int, out: list[dict], budget: list[int],
+              max_depth: int = 1) -> None:
     comment = _hn_get_json(f"item/{cid}.json")
     if not comment or comment.get("deleted") or comment.get("dead"):
         return
@@ -127,10 +129,12 @@ def _hn_visit(cid: str, depth: int, out: list[dict], budget: list[int]) -> None:
             "source": "HN",
             "discussion_url": "",
         })
+    if depth >= max_depth:
+        return
     for kid in (comment.get("kids") or [])[:2]:
         if budget[0] <= 0:
             break
-        _hn_visit(kid, depth + 1, out, budget)
+        _hn_visit(kid, depth + 1, out, budget, max_depth)
 
 
 def fetch_hn_comments(disc: dict, max_comments: int = 40) -> list[dict]:
@@ -354,7 +358,7 @@ def _normalize_card(card: dict, frag_index: dict) -> Optional[dict]:
         if _norm_quote(e.get("quote")) not in _norm_quote(frag["text"]):
             return None
         cleaned.append({"source": str(e.get("source") or frag["source"]),
-                        "discussion_url": str(e.get("discussion_url") or frag["discussion_url"]),
+                        "discussion_url": frag["discussion_url"],
                         "comment_url": comment_url,
                         "quote": _norm_quote(e.get("quote"))[:200]})
     category = str(card.get("category") or "").strip()
