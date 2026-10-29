@@ -292,3 +292,65 @@ def test_render_scout_list_empty_and_no_ai():
     assert "Ничего необычного" in text and "/scout 168" in text
     text = scout.render_scout_list([_scout_topic()], 48, used_ai=False)
     assert "без AI" in text
+
+
+# --- build_scout_card ---
+
+
+_CARD_RAW = '''```json
+{"hook": "Робот сам собрал кубик Рубика ⚡",
+ "what_happened": "Команда X показала четвероногого робота, который сам собрал кубик. Демо снято на видео 28.10.",
+ "why_interesting": "Такое раньше делали только промышленные манипуляторы.",
+ "post_format": "необычный эксперимент", "visual": "видео демо в статье",
+ "score_why": "высокая неожиданность и наглядность",
+ "claims": ["Robot собрал кубик Рубика", "Видео от 28.10"]}
+```'''
+
+
+def _card_topic(full_text="Robot собрал кубик Рубика. Демо на видео."):
+    import scout
+    art = {"title": "Robot solves cube", "url": "https://a.example/1",
+           "source": "arXiv cs.RO", "published": None, "summary": "суть",
+           "_full_text": full_text}
+    return {"article": art, "criteria": {"неожиданность": 2}, "total": 9,
+            "category": "А", "one_liner": "суть", "ai": True}
+
+
+def test_build_scout_card_parses_full_json():
+    import scout
+    card = scout.build_scout_card(_card_topic(), _fake_client(_CARD_RAW))
+    assert card["hook"] == "Робот сам собрал кубик Рубика ⚡"
+    assert "четвероногого робота" in card["what_happened"]
+    assert card["post_format"] == "необычный эксперимент"
+    assert len(card["claims"]) == 2
+    assert card["no_ai"] is False
+    assert card["first_source_url"] == "https://a.example/1"
+    assert card["total"] == 9
+    assert card["category"] == "А"
+
+
+def test_build_scout_card_rejects_bad_format():
+    import scout
+    raw = _CARD_RAW.replace("необычный эксперимент", "статья-расследование")
+    card = scout.build_scout_card(_card_topic(), _fake_client(raw))
+    assert card["no_ai"] is True
+    assert card["hook"] == "Robot solves cube"
+
+
+def test_build_scout_card_stub_without_client():
+    import scout
+    card = scout.build_scout_card(_card_topic(), None)
+    assert card["no_ai"] is True
+    assert card["what_happened"] == "суть"
+    assert card["status"] == "требует проверки"
+    assert card["confirmed"] == [] and card["needs_check"] == []
+    assert card["visual"] == "не найден"
+
+
+def test_get_or_build_scout_card_caches():
+    import scout
+    topic = _card_topic()
+    first = scout.get_or_build_scout_card(topic, None)
+    second = scout.get_or_build_scout_card(topic, None)
+    assert second is first
+    assert first["published"] == topic["article"]["published"]

@@ -11,6 +11,7 @@ import urllib.request
 
 import editorial
 import news_pipeline
+import notifier
 import tools_digest
 from notifier import KEYWORDS, score_article, clean_text
 
@@ -264,3 +265,118 @@ def render_scout_list(topics: list[dict], hours: int, used_ai: bool) -> str:
         lines.append("")
     lines.append("Карточка: /scout 1 … /scout %d" % len(topics))
     return "\n".join(lines)
+
+
+SCOUT_POST_FORMATS = ("новость с объяснением", "необычный эксперимент",
+                      "забавный провал", "практический разбор инструмента",
+                      "дискуссионный пост", "короткий видеопост",
+                      "опрос аудитории")
+
+MAX_CLAIMS = 6
+
+_CARD_SYSTEM_PROMPT = (
+    "Ты — редактор-скаут Telegram-канала Zerocoder (ИИ и вайбкодинг). Пиши только "
+    "на русском языке. Ничего не выдумывай: используешь ТОЛЬКО факты из материала "
+    "ниже. Происхождение вирусных видео и изображений не проверяемо автоматически — "
+    "если материал не подтверждает его, пиши «происхождение не проверено». Заголовок-"
+    "крючок передаёт суть, но не преувеличивает. Не пиши готовый Telegram-пост. "
+    "Отвечай СТРОГО одним валидным JSON-объектом, без пояснений."
+)
+
+
+def _parse_scout_card_json(raw) -> dict | None:
+    """Validate card builder JSON per spec §8 fields. Returns None on failure."""
+    data = editorial._extract_json_object(raw)
+    if not data:
+        return None
+    hook = clean_text(str(data.get("hook", ""))).strip()
+    what_happened = clean_text(str(data.get("what_happened", ""))).strip()
+    fmt = str(data.get("post_format", "")).strip()
+    if not hook or not what_happened or fmt not in SCOUT_POST_FORMATS:
+        return None
+    claims = data.get("claims")
+    if not isinstance(claims, list):
+        claims = []
+    claims = [clean_text(str(c)).strip() for c in claims][:MAX_CLAIMS]
+    claims = [c for c in claims if c]
+    return {"hook": hook, "what_happened": what_happened,
+            "why_interesting": clean_text(str(data.get("why_interesting", ""))).strip(),
+            "post_format": fmt,
+            "visual": clean_text(str(data.get("visual", ""))).strip() or "не найден",
+            "score_why": clean_text(str(data.get("score_why", ""))).strip(),
+            "claims": claims}
+
+
+def _scout_card_stub(topic: dict) -> dict:
+    article = topic["article"]
+    return {
+        "hook": article["title"],
+        "category": topic.get("category", "не определена"),
+        "total": topic["total"],
+        "what_happened": (article.get("summary") or "")[:600],
+        "why_interesting": "", "post_format": "",
+        "visual": "не найден", "score_why": "",
+        "claims": [], "confirmed": [], "needs_check": [], "sources": [],
+        "status": "требует проверки",
+        "first_source_url": article["url"],
+        "no_ai": True,
+    }
+
+
+def build_scout_card(topic: dict, groq_client=None) -> dict:
+    """Scout card for one topic (spec §8: 7-template fields + claims). With a
+    client: one AI call over the full text; without (or on failure) — stub."""
+    card = _scout_card_stub(topic)
+    if not groq_client:
+        return card
+    article = topic["article"]
+    content = article.get("_full_text") or article.get("summary", "")
+    prompt = (
+        "Собери редакторскую карточку скаута по материалу ниже.\n\n"
+        f"Категория (выбрана скорингом): {topic['category']}\n\n"
+        f"{notifier._NATURAL_TEXT_RULES}\n\n"
+        "Ответь строго одним JSON-объектом:\n"
+        '{"hook": "<заголовок-крючок>", "what_happened": "<кто, что и когда сделал, '
+        '2-4 предложения>", "why_interesting": "<чем выделяется, 1-2 предложения>", '
+        '"post_format": "<один из: ' + "; ".join(SCOUT_POST_FORMATS) + '>", '
+        '"visual": "<какой есть визуал в материале (видео/фото/скриншот/демо) и ссылка '
+        'из текста, если есть; если нет подтверждения происхождения — так и пиши>", '
+        '"score_why": "<краткое объяснение оценки 0-10>", '
+        '"claims": ["<проверяемое утверждение 1>", "<...>"] — все проверяемые факты '
+        'карточки по одному, максимум 6}\n\n'
+        f"Источник: {article['source']}\n"
+        f"Заголовок: {article['title']}\n"
+        f"Содержание: {content[:3500]}"
+    )
+    try:
+        response = groq_client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": _CARD_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=3000,
+            reasoning_effort="low",
+        )
+        parsed = _parse_scout_card_json(response.choices[0].message.content)
+    except Exception:
+        parsed = None
+    if not parsed:
+        return card
+    card.update(parsed)
+    card["no_ai"] = False
+    return card
+
+
+def get_or_build_scout_card(topic: dict, groq_client=None) -> dict:
+    """Caching wrapper: once a card is built for a topic it is reused —
+    /scout N again never burns a second AI call on the same topic. A built
+    card goes through fact_check_scout_card (later task) if AI produced it."""
+    if topic.get("card") is None:
+        card = build_scout_card(topic, groq_client)
+        article = topic["article"]
+        if not card["no_ai"]:
+            card = fact_check_scout_card(card, article, groq_client)
+        card["published"] = article.get("published")
+        topic["card"] = card
+    return topic["card"]
