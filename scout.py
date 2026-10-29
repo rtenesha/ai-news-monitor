@@ -232,3 +232,35 @@ def select_scout_topics(articles: list[dict], groq_client=None) -> tuple[list[di
         topics = [t for t in topics if t["total"] >= FALLBACK_TOTAL]
     topics.sort(key=_topic_sort_key, reverse=True)
     return topics[:SCOUT_LIST_MAX], used_ai
+
+
+DATELESS_BADGE = "трендинг на момент сбора, без даты выхода"
+
+
+def render_scout_list(topics: list[dict], hours: int, used_ai: bool) -> str:
+    """Compact numbered topic list for /scout (Telegram HTML)."""
+    import html
+    lines = [f"🔎 <b>Необычное — подборка скаута</b> ({hours} ч)", ""]
+    if not topics:
+        lines.append("Ничего необычного не нашлось. Попробуй шире: /scout 168")
+        return "\n".join(lines)
+    if not used_ai:
+        lines.append("⚠️ Режим без AI — оценки приблизительные (по ключевым словам)")
+        lines.append("")
+    for i, t in enumerate(topics, 1):
+        status = "приоритет" if t["total"] >= PRIORITY_TOTAL else "резерв"
+        label = SCOUT_CATEGORIES.get(t.get("category"), t.get("category") or "")
+        one_liner = t["one_liner"] or t["article"]["title"]
+        lines.append(f"<b>{i}. [{t['total']}/10 · {html.escape(label)} · {status}]</b> "
+                     f"{html.escape(one_liner)}")
+        src_line = f"   ↳ {html.escape(t['article']['source'])} · /scout {i}"
+        if t["article"].get("published") is None:
+            src_line += f" · {DATELESS_BADGE}"
+        lines.append(src_line)
+        url = t["article"].get("url") or ""
+        if url:
+            lines.append(f'   🔗 <a href="{html.escape(url, quote=True)}">'
+                         f'{html.escape(url)}</a>')
+        lines.append("")
+    lines.append("Карточка: /scout 1 … /scout %d" % len(topics))
+    return "\n".join(lines)

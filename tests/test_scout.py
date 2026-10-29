@@ -232,3 +232,63 @@ def test_select_scout_per_article_fallback():
 
     assert used_ai is True  # клиент был, но конкретная статья ушла в фолбэк
     assert topics[0]["ai"] is False
+
+
+# --- render_scout_list ---
+
+
+def _scout_topic(total=9, published=None, url="https://a.example/1",
+                 source="arXiv cs.RO", one_liner="Робот сам собрал кубик"):
+    import scout
+    return {"article": {"title": "Robot solves cube", "url": url, "source": source,
+                        "published": published, "summary": ""},
+            "criteria": {}, "total": total, "category": "А",
+            "one_liner": one_liner, "ai": True}
+
+
+def test_render_scout_list_numbering_scores_and_links():
+    import scout
+    text = scout.render_scout_list([_scout_topic()], 48, used_ai=True)
+    assert "1." in text
+    assert "/scout 1" in text
+    assert "9/10" in text
+    assert "приоритет" in text
+    assert 'href="https://a.example/1"' in text
+
+
+def test_render_scout_list_human_category_names():
+    import scout
+    text = scout.render_scout_list([_scout_topic()], 48, used_ai=True)
+    assert "Роботы и эксперименты" in text
+
+
+def test_render_scout_list_reserves_sub_priority():
+    import scout
+    text = scout.render_scout_list([_scout_topic(total=6)], 48, used_ai=True)
+    assert "резерв" in text
+
+
+def test_render_scout_list_escapes_malicious_url():
+    import scout
+    topic = _scout_topic(url='https://a.example/1"><a href="https://phish.example/x">')
+    text = scout.render_scout_list([topic], 48, used_ai=True)
+    assert 'href="https://phish.example' not in text
+    assert "&quot;&gt;&lt;a" in text
+
+
+def test_render_scout_list_dateless_badge():
+    import scout
+    text = scout.render_scout_list([_scout_topic(published=None)], 48, used_ai=True)
+    assert "без даты" in text
+    from datetime import datetime
+    dated = _scout_topic(published=datetime(2026, 10, 28))
+    text = scout.render_scout_list([dated], 48, used_ai=True)
+    assert "без даты" not in text
+
+
+def test_render_scout_list_empty_and_no_ai():
+    import scout
+    text = scout.render_scout_list([], 48, used_ai=True)
+    assert "Ничего необычного" in text and "/scout 168" in text
+    text = scout.render_scout_list([_scout_topic()], 48, used_ai=False)
+    assert "без AI" in text
