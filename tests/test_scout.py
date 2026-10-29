@@ -455,3 +455,54 @@ def test_verification_status_labels():
         checked = scout.fact_check_scout_card(dict(card), article,
                                               _fake_client(_FC_RAW))
     assert checked["status"] == "требует проверки"
+
+
+# --- render_scout_card_messages ---
+
+
+def test_render_scout_card_all_fields_present():
+    import scout
+    card, article = _checked_card()
+    with patch.object(news_pipeline, "fetch_google_news", return_value=[]):
+        card = scout.fact_check_scout_card(card, article, _fake_client(_FC_RAW))
+    msgs = scout.render_scout_card_messages({"category": "А"}, card)
+    joined = "\n".join(msgs)
+    assert "Робот сам собрал кубик Рубика ⚡" in joined  # hook
+    assert card["what_happened"] == "Команда X показала робота, собравшего кубик."  # rewrite применён
+    assert "Что произошло" in joined
+    assert "необычный эксперимент" in joined
+    assert "высокая неожиданность" in joined  # score_why
+    assert all(len(m) <= 4096 for m in msgs)
+
+
+def test_render_scout_card_escapes_html():
+    import scout
+    card, article = _checked_card()
+    card["what_happened"] = "скрипт <b>жирный</b> & хак <script>alert(1)</script>"
+    msgs = scout.render_scout_card_messages({"category": "А"}, card)
+    joined = "\n".join(msgs)
+    assert "<script>" not in joined
+    assert "&lt;script&gt;" in joined
+    assert "&lt;b&gt;жирный&lt;/b&gt;" in joined
+
+
+def test_render_scout_card_status_and_sources():
+    import scout
+    card, article = _checked_card()
+    card["status"] = "подтверждено"
+    card["confirmed"] = ["Robot собрал кубик Рубика"]
+    card["needs_check"] = []
+    card["sources"] = [{"title": "РБК", "url": "https://news.example/s1"}]
+    msgs = scout.render_scout_card_messages({"category": "А"}, card)
+    joined = "\n".join(msgs)
+    assert "подтверждено" in joined
+    assert 'href="https://a.example/1"' in joined          # первоисточник
+    assert 'href="https://news.example/s1"' in joined      # доп. источник
+
+
+def test_render_scout_card_dateless():
+    import scout
+    card, article = _checked_card()
+    card["published"] = None
+    msgs = scout.render_scout_card_messages({"category": "А"}, card)
+    assert "трендинг на момент сбора" in "\n".join(msgs)

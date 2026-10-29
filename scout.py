@@ -508,3 +508,35 @@ def fact_check_scout_card(card: dict, article: dict, groq_client=None) -> dict:
         card["what_happened"] = clean_text(data["what_happened"])
     card["status"] = _verification_status(card)
     return card
+
+
+def render_scout_card_messages(topic: dict, card: dict) -> list[str]:
+    """Scout card as Telegram HTML messages per the §7 template order.
+    Everything html-escaped, ≤ 4096 each (editorial._split_by_paragraphs)."""
+    import html
+    label = SCOUT_CATEGORIES.get(topic.get("category"), topic.get("category") or "—")
+    facts = "\n".join(f"• {html.escape(f)}" for f in card.get("confirmed", [])) or "—"
+    needs = "\n".join(f"• {html.escape(n)}" for n in card.get("needs_check", [])) or "—"
+    sources = "\n".join(
+        f'<a href="{html.escape(s["url"], quote=True)}">{html.escape(s["title"])}</a>'
+        for s in card.get("sources", [])[:3]) or "—"
+    text = "\n".join(filter(None, [
+        f"🗂 <b>{html.escape(card['hook'])}</b>",
+        f"Категория: {html.escape(label)} · Оценка: {card.get('total', 0)}/10 · "
+        f"Статус проверки: {html.escape(card.get('status', 'требует проверки'))}",
+        "Дата публикации: " + editorial._fmt_date(card.get("published")),
+        "",
+        "Что произошло:",
+        html.escape(card["what_happened"]),
+        f"Почему интересно: {html.escape(card.get('why_interesting', ''))}" if card.get("why_interesting") else "",
+        f"Потенциал поста: {html.escape(card.get('post_format', ''))}" if card.get("post_format") else "",
+        f"Визуал: {html.escape(card.get('visual', ''))}" if card.get("visual") else "",
+        "Источники:",
+        f'🔗 <a href="{html.escape(card.get("first_source_url", ""), quote=True)}">'
+        f'{html.escape(card.get("first_source_url", ""))}</a>',
+        "Доп. источники: " + sources,
+        "Подтверждённые факты:\n" + facts,
+        "Что требует проверки:\n" + needs,
+        f"Оценка: {html.escape(card.get('score_why', ''))}" if card.get("score_why") else "",
+    ]))
+    return editorial._split_by_paragraphs(text)
