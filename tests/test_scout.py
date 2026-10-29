@@ -107,3 +107,128 @@ def test_fetch_hf_papers_parses_and_never_raises():
     with patch.object(news_pipeline.urllib.request, "urlopen",
                       side_effect=RuntimeError("down")):
         assert scout.fetch_hf_papers() == []
+
+# --- score_scout_topic_ai ---
+
+
+def _fake_client(content: str):
+    """Minimal Groq client stand-in: chat.completions.create -> given content."""
+    class _Message:
+        def __init__(self, c): self.content = c
+
+    class _Choice:
+        def __init__(self, c): self.message = _Message(c)
+
+    class _Resp:
+        def __init__(self, c): self.choices = [_Choice(c)]
+
+    class _Completions:
+        @staticmethod
+        def create(**kwargs):
+            return _Resp(content)
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Client:
+        chat = _Chat()
+
+    return _Client()
+
+
+_SCORE_RAW = ('{"criteria": {"неожиданность": 2, "наглядность": 2, "понятность": 1, '
+              '"релевантность": 2, "потенциал обсуждения": 1}, "total": 9, '
+              '"category": "А", "one_liner": "Робот сам собрал кубик"}')
+
+
+def test_score_parses_valid_json():
+    import scout
+    result = scout.score_scout_topic_ai(_article(), _fake_client(_SCORE_RAW))
+    assert result is not None
+    assert result["total"] == 8
+    assert result["criteria"]["неожиданность"] == 2
+    assert result["category"] == "А"
+    assert result["one_liner"] == "Робот сам собрал кубик"
+
+
+def test_score_recomputes_total():
+    import scout
+    raw = _SCORE_RAW.replace('"total": 9', '"total": 55')
+    assert scout.score_scout_topic_ai(_article(), _fake_client(raw))["total"] == 8
+
+
+def test_score_rejects_out_of_range():
+    import scout
+    raw = _SCORE_RAW.replace('"неожиданность": 2', '"неожиданность": 3')
+    assert scout.score_scout_topic_ai(_article(), _fake_client(raw)) is None
+
+
+def test_score_rejects_unknown_category():
+    import scout
+    assert scout.score_scout_topic_ai(
+        _article(), _fake_client(_SCORE_RAW.replace('"category": "А"', '"category": "Ж"'))) is None
+
+
+def test_score_drops_pustishka():
+    import scout
+    raw = _SCORE_RAW.replace('"category": "А"', '"category": "пустышка"')
+    assert scout.score_scout_topic_ai(_article(), _fake_client(raw)) is None
+
+
+def test_score_none_on_garbage_client_none():
+    import scout
+    assert scout.score_scout_topic_ai(_article(), _fake_client("не JSON вообще")) is None
+    client = Mock()
+    client.chat.completions.create.side_effect = RuntimeError("down")
+    assert scout.score_scout_topic_ai(_article(), client) is None
+    assert scout.score_scout_topic_ai(_article(), None) is None
+
+
+# --- select_scout_topics ---
+
+
+_STRONG = '{"criteria": {"неожиданность": 2, "наглядность": 2, "понятность": 2, "релевантность": 2, "потенциал обсуждения": 2}, "total": 10, "category": "А", "one_liner": "сильная"}'
+_WEAK = '{"criteria": {"неожиданность": 1, "наглядность": 0, "понятность": 1, "релевантность": 0, "потенциал обсуждения": 1}, "total": 3, "category": "Б", "one_liner": "слабая"}'
+
+
+def test_select_scout_keeps_ge_6_and_sorts():
+    import scout
+    arts = [_article(f"ChatGPT новость {i}", url=f"https://a.example/{i}") for i in range(3)]
+    client = Mock()
+    responses = [Mock() for _ in [_STRONG, _WEAK, _STRONG]]
+    for r, c in zip(responses, [_STRONG, _WEAK, _STRONG]):
+        r.choices = [Mock()]
+        r.choices[0].message.content = c
+    client.chat.completions.create.side_effect = responses
+    with patch.object(news_pipeline, "extract_full_text", return_value="полный текст"):
+        topics, used_ai = scout.select_scout_topics(arts, client)
+
+    assert used_ai is True
+    assert len(topics) == 2  # слабая (total 3 < 6) отброшена
+    assert all(t["ai"] for t in topics)
+    assert topics[0]["total"] == 10
+    assert topics[0]["article"]["_full_text"] == "полный текст"
+
+
+def test_select_scout_fallback_without_client():
+    import scout
+    arts = [_article(f"ChatGPT новость {i}", url=f"https://a.example/{i}") for i in range(12)]
+    topics, used_ai = scout.select_scout_topics(arts, None)
+
+    assert used_ai is False
+    assert len(topics) == scout.SCOUT_LIST_MAX == 10
+    assert all(t["ai"] is False for t in topics)
+    totals = [t["total"] for t in topics]
+    assert totals == sorted(totals, reverse=True)
+
+
+def test_select_scout_per_article_fallback():
+    import scout
+    arts = [_article("ChatGPT новость", url="https://a.example/1")]
+    client = Mock()
+    client.chat.completions.create.side_effect = RuntimeError("down")
+    with patch.object(news_pipeline, "extract_full_text", return_value=None):
+        topics, used_ai = scout.select_scout_topics(arts, client)
+
+    assert used_ai is True  # клиент был, но конкретная статья ушла в фолбэк
+    assert topics[0]["ai"] is False

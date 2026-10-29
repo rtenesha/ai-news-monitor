@@ -101,3 +101,134 @@ def collect_scout_topics(hours: int = DEFAULT_HOURS) -> list[dict]:
     articles = news_pipeline.dedup_cross_source(articles)
     relevant = [a for a in articles if _scout_score(a) > 0]
     return sorted(relevant, key=_scout_score, reverse=True)[:CANDIDATE_CAP]
+
+
+SCOUT_CRITERIA = ["неожиданность", "наглядность", "понятность",
+                  "релевантность", "потенциал обсуждения"]
+
+_CRITERIA_HELP = (
+    "- неожиданность: есть ли в истории что-то необычное\n"
+    "- наглядность: можно ли показать результат на фото, видео, скриншоте или простой схеме\n"
+    "- понятность: получится ли объяснить суть без сложного технического контекста\n"
+    "- релевантность: интересна ли аудитории Zerocoder (ИИ и вайбкодинг)\n"
+    "- потенциал обсуждения: вызывает ли удивление, спор, улыбку или желание поделиться"
+)
+
+_SCORE_SYSTEM_PROMPT = (
+    "Ты — редактор-скаут Telegram-канала Zerocoder (ИИ, вайбкодинг, агенты). "
+    "Ищешь необычные и потенциально вирусные истории, а не обычные релизы. "
+    "Пиши исключительно на русском языке. Отвечай СТРОГО одним валидным "
+    "JSON-объектом, без пояснений."
+)
+
+_SCOUT_RULES = (
+    "- обычный анонс очередной модели без действительно интересной особенности — "
+    "пустышка;\n"
+    "- провалы и курьёзы не придумывай и не преувеличивай: только реальные случаи "
+    "с подтверждением из материала;\n"
+    "- отделяй подтверждённые факты от мнений, прогнозов и гипотез;\n"
+    "- для сумм денег уточняй смысл: выручка, расходы, инвестиции или оценка."
+)
+
+
+def _parse_scout_score(raw) -> dict | None:
+    """Validate scorer JSON: criteria 0-2 each, category from known list.
+    total is RECOMPUTED from criteria (model's own number ignored).
+    Категория «пустышка» = история не годится → None (отброс)."""
+    data = editorial._extract_json_object(raw)
+    if not data:
+        return None
+    given = data.get("criteria")
+    if not isinstance(given, dict):
+        return None
+    criteria = {}
+    for key in SCOUT_CRITERIA:
+        v = given.get(key)
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not 0 <= int(v) <= 2:
+            return None
+        criteria[key] = int(v)
+    category = str(data.get("category", "")).strip()
+    one_liner = clean_text(str(data.get("one_liner", ""))).strip()
+    if category not in SCOUT_CATEGORIES or not one_liner:
+        return None
+    if category == SCOUT_REJECT_CATEGORY:
+        return None
+    return {"criteria": criteria, "total": sum(criteria.values()),
+            "category": category, "one_liner": one_liner}
+
+
+def score_scout_topic_ai(article: dict, groq_client, full_text=None) -> dict | None:
+    """Scout 5-criteria scoring of one article (max 10). Returns None on any
+    failure — caller falls back to keyword scoring for this article."""
+    if not groq_client:
+        return None
+    content = full_text or article["summary"]
+    prompt = (
+        "Оцени историю по 5 критериям — каждый 0, 1 или 2 "
+        "(2 — сильно, 0 — нет):\n\n"
+        f"{_CRITERIA_HELP}\n\n"
+        "Выбери ОДНУ категорию строго из списка: "
+        + "; ".join(f"{k} — {v}" for k, v in SCOUT_CATEGORIES.items())
+        + f". «{SCOUT_REJECT_CATEGORY}» — если история не годится для поста.\n\n"
+        "Правила:\n" + _SCOUT_RULES + "\n\n"
+        "Одной строкой опиши суть истории (one_liner).\n\n"
+        "Ответь строго одним JSON-объектом:\n"
+        '{"criteria": {"неожиданность": <0-2>, "наглядность": <0-2>, '
+        '"понятность": <0-2>, "релевантность": <0-2>, '
+        '"потенциал обсуждения": <0-2>}, "total": <сумма>, '
+        '"category": "<из списка>", "one_liner": "<одна строка>"}\n\n'
+        f"Источник: {article['source']}\n"
+        f"Заголовок: {article['title']}\n"
+        f"Содержание: {content[:3000]}"
+    )
+    try:
+        response = groq_client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": _SCORE_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=2000,
+            reasoning_effort="low",
+        )
+    except Exception:
+        return None
+    return _parse_scout_score(response.choices[0].message.content)
+
+
+_OLD_EPOCH = editorial._OLD_EPOCH
+
+
+def _topic_sort_key(topic: dict):
+    return (topic["total"], topic["article"].get("published") or _OLD_EPOCH)
+
+
+def select_scout_topics(articles: list[dict], groq_client=None) -> tuple[list[dict], bool]:
+    """Score candidates into scout topics. AI mode: keep total >= LIST_TOTAL
+    (8-10 приоритет, 6-7 резерв). Fallback mode (no client or failed call):
+    keyword totals marked ai=False, top SCOUT_LIST_MAX with total >= FALLBACK_TOTAL."""
+    used_ai = bool(groq_client)
+    topics = []
+    for article in articles:
+        full_text = None
+        if groq_client:
+            full_text = news_pipeline.extract_full_text(article["url"])
+            article["_full_text"] = full_text
+        result = score_scout_topic_ai(article, groq_client, full_text=full_text)
+        if result:
+            topic = {"article": article, **result, "ai": True}
+        else:
+            topic = {"article": article, "criteria": {},
+                     "total": score_article(article),
+                     "category": "не определена", "one_liner": article["title"],
+                     "ai": False}
+        topics.append(topic)
+
+    if used_ai:
+        topics = [t for t in topics
+                  if (t["ai"] and t["total"] >= LIST_TOTAL)
+                  or (not t["ai"] and t["total"] >= FALLBACK_TOTAL)]
+    else:
+        topics = [t for t in topics if t["total"] >= FALLBACK_TOTAL]
+    topics.sort(key=_topic_sort_key, reverse=True)
+    return topics[:SCOUT_LIST_MAX], used_ai
