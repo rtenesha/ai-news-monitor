@@ -6,6 +6,7 @@ docs/superpowers/specs/2026-10-29-scout-design.md."""
 
 from __future__ import annotations
 
+import html
 import json as _json
 import re
 import urllib.request
@@ -71,18 +72,26 @@ def _scout_score(article: dict) -> int:
 
 
 def fetch_hf_papers() -> list[dict]:
-    """Front-page papers of huggingface.co/papers (no official RSS).
-    Never raises — a failed or unparsable page just yields no candidates."""
+    """Front-page papers of huggingface.co/papers (no official RSS). The live
+    page (checked 2026-10-29) carries id/title inside HTML-escaped data-props
+    JSON blobs — unescape and pull '"paper":{"id":...,"title":...' pairs;
+    legacy <a href="/papers/..."> anchors kept as a fallback pattern. Never
+    raises — a failed or unparsable page just yields no candidates."""
     url = "https://huggingface.co/papers"
     try:
         req = urllib.request.Request(url, headers={"User-Agent": news_pipeline._BROWSER_UA})
         with urllib.request.urlopen(req, timeout=15) as resp:
-            html_text = resp.read().decode("utf-8", "replace")
+            raw = resp.read().decode("utf-8", "replace")
     except Exception:
         return []
+    text = html.unescape(raw)
+    found = re.findall(
+        r'"paper":\{"id":"(\d{4}\.\d{4,6})".{0,2000}?"title":"([^"]+)"', text)
+    if not found:
+        found = re.findall(
+            r'href="/papers/(\d{4}\.\d{4,6})"[^>]*>([^<]+)<', raw)
     papers, seen = [], set()
-    for pid, title in re.findall(
-            r'href="/papers/(\d{4}\.\d{4,6})"[^>]*>([^<]+)<', html_text):
+    for pid, title in found:
         if pid in seen:
             continue
         seen.add(pid)
@@ -157,7 +166,7 @@ def _parse_scout_score(raw) -> dict | None:
             return None
         criteria[key] = int(v)
     category = str(data.get("category", "")).strip()
-    one_liner = clean_text(str(data.get("one_liner", ""))).strip()
+    one_liner = clean_text(str(data.get("one_liner", ""))).strip()[:160]
     if category not in SCOUT_CATEGORIES or not one_liner:
         return None
     if category == SCOUT_REJECT_CATEGORY:

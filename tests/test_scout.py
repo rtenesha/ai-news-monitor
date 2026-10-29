@@ -108,11 +108,16 @@ def test_collect_scout_topics_caps_at_20_and_orders_by_score():
 
 
 def test_fetch_hf_papers_parses_and_never_raises():
+    import html
     import scout
-    fixture = """
-    <div><a href="/papers/2510.01010">Learning Rubik's Cube with a Quadruped Robot</a></div>
-    <div><a href="/papers/2510.9999">Something Else About Robots</a></div>
-    """
+    # фикстура по структуре живой страницы (2026-10-29): id и title лежат в
+    # HTML-экранированной data-props JSON-болванке, "paper":{"id":...,"authors":[...],"title":...};
+    # старый паттерн <a href="/papers/...">Title</a> оставляем как фолбэк
+    paper_json = ('{"paper":{"id":"2510.01010","authors":[{"_id":"a1","name":"A"}],'
+                  '"title":"Learning Rubik with a Quadruped Robot","summary":"s1","upvotes":3}}')
+    fixture = ('<div data-props="' + html.escape(paper_json, quote=True) + '"></div>'
+               '<div data-props="' + html.escape(paper_json.replace("2510.01010", "2510.9999")
+                                                .replace("Learning Rubik", "Something Else"), quote=True) + '"></div>')
     resp = Mock()
     resp.__enter__ = Mock(return_value=resp)
     resp.__exit__ = Mock(return_value=False)
@@ -123,7 +128,7 @@ def test_fetch_hf_papers_parses_and_never_raises():
 
     assert len(papers) == 2
     assert papers[0]["url"] == "https://huggingface.co/papers/2510.01010"
-    assert "Rubik" in papers[0]["title"]
+    assert "Quadruped" in papers[0]["title"]
     assert papers[0]["source"] == "HF Papers"
     assert papers[0]["published"] is None
 
@@ -196,6 +201,15 @@ def test_score_drops_pustishka():
     import scout
     raw = _SCORE_RAW.replace('"category": "А"', '"category": "пустышка"')
     assert scout.score_scout_topic_ai(_article(), _fake_client(raw)) is None
+
+
+def test_score_caps_one_liner():
+    """Длинный one_liner от модели может переполнить сообщения списка — кап 160."""
+    import scout
+    long = "Р" * 300
+    raw = _SCORE_RAW.replace("Робот сам собрал кубик", long)
+    result = scout.score_scout_topic_ai(_article(), _fake_client(raw))
+    assert len(result["one_liner"]) <= 160
 
 
 def test_score_none_on_garbage_client_none():
