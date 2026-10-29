@@ -6,6 +6,7 @@ docs/superpowers/specs/2026-10-29-scout-design.md."""
 
 from __future__ import annotations
 
+import json as _json
 import re
 import urllib.request
 
@@ -380,3 +381,130 @@ def get_or_build_scout_card(topic: dict, groq_client=None) -> dict:
         card["published"] = article.get("published")
         topic["card"] = card
     return topic["card"]
+
+
+_FC_SYSTEM_PROMPT = (
+    "Ты — фактчекер Telegram-канала. Пиши только на русском языке. "
+    "Отвечай СТРОГО одним валидным JSON-объектом, без пояснений."
+)
+
+
+def _parse_scout_factcheck(raw) -> dict | None:
+    """Parse the card fact-checker output: {verdicts: [...], hook, what_happened}
+    where verdicts use the digest fact-check schema (n / verdict / text / query)."""
+    data = editorial._extract_json_object(raw)
+    if not data or not isinstance(data.get("verdicts"), list):
+        return None
+    checks = notifier._parse_factcheck_json(_json.dumps(data["verdicts"]))
+    return {"verdicts": checks,
+            "hook": str(data.get("hook", "")).strip(),
+            "what_happened": str(data.get("what_happened", "")).strip()}
+
+
+def _verification_status(card: dict) -> str:
+    """подтверждено — все claims ok; частично подтверждено — есть
+    подтверждённые и хотя бы один uncertain с корроборацией; иначе
+    (что-то не сверено / uncertain без корроборации / claim убит как wrong)
+    — требует проверки."""
+    claims = card.get("claims", [])
+    confirmed = card.get("confirmed", [])
+    needs = card.get("needs_check", [])
+    if not claims:
+        return "требует проверки"
+    if not needs and len(confirmed) == len(claims):
+        return "подтверждено"
+    if confirmed and any(n.startswith("✓ (подтверждено другими СМИ)") for n in needs):
+        return "частично подтверждено"
+    return "требует проверки"
+
+
+def fact_check_scout_card(card: dict, article: dict, groq_client=None) -> dict:
+    """Fact-check the card's numbered claims against the article text
+    (digest verdict scheme: ok/uncertain/wrong), then corroboration of the
+    uncertain ones via Google News (keyless). wrong claims leave both lists
+    and the checker rewrites what_happened from the confirmed facts only.
+    Without a client: claims land in needs_check unverified. Always sets
+    card["status"]. Never raises."""
+    claims = card.get("claims", [])
+    if not groq_client or not claims:
+        card["confirmed"] = []
+        card["needs_check"] = list(claims)
+        card["status"] = _verification_status(card)
+        return card
+
+    full_text = article.get("_full_text") or article.get("summary", "")
+    numbered = "\n".join(f"{i + 1}. {claim}" for i, claim in enumerate(claims))
+    prompt = (
+        "Сверь каждое утверждение карточки с текстом статьи:\n"
+        "- «ok» — подтверждается текстом статьи.\n"
+        "- «uncertain» — не подтверждается, но и не противоречит.\n"
+        "- «wrong» — противоречит тексту статьи.\n\n"
+        "В «what_happened» верни поле, где wrong-утверждения удалены, а "
+        "uncertain переформулированы только из подтверждённого. Пустая строка — "
+        "если правок нет.\n\n"
+        "Для каждого утверждения — query: короткий поисковый запрос 2-4 слова "
+        "по ключевым сущностям, чтобы проверить, о том же ли пишут другие СМИ.\n\n"
+        "Ответь строго одним JSON-объектом:\n"
+        '{"verdicts": [{"n": <номер>, "verdict": "ok|uncertain|wrong", '
+        '"text": "<верифицированная формулировка>", "query": "<запрос>"}], '
+        '"hook": "<исправленный заголовок-крючок или пусто>", '
+        '"what_happened": "<исправленное поле или пусто>"}\n\n'
+        f"Текст статьи: {full_text[:1800]}\n"
+        f"(оригинал: {article.get('url', '')})\n\n"
+        "Утверждения карточки:\n" + numbered
+    )
+    try:
+        response = groq_client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": _FC_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=2000,
+            reasoning_effort="low",
+        )
+        data = _parse_scout_factcheck(response.choices[0].message.content)
+    except Exception:
+        data = None
+
+    if not data or not data["verdicts"]:
+        card["confirmed"] = []
+        card["needs_check"] = list(claims)
+        card["status"] = _verification_status(card)
+        return card
+
+    by_n = {c["n"]: c for c in data["verdicts"]}
+    confirmed, needs_check, sources, seen = [], [], [], set()
+    own_key = news_pipeline.normalize_url(article.get("url", ""))
+    for i, claim in enumerate(claims):
+        check = by_n.get(i + 1)
+        if check is None or check["verdict"] == "wrong":
+            continue
+        text = check["text"] or claim
+        if check["verdict"] == "ok":
+            confirmed.append(text)
+            continue
+        # uncertain — веб-корроборация через Google News
+        try:
+            found = news_pipeline.fetch_google_news([check["query"]], hours=24) \
+                if check["query"] else []
+        except Exception:
+            found = []
+        corroborated = len(notifier._publishers_from_google_news(found)) >= 2
+        for a in found:
+            key = news_pipeline.normalize_url(a["url"])
+            if key != own_key and key not in seen:
+                seen.add(key)
+                sources.append({"title": a["title"], "url": a["url"]})
+        label = "✓ (подтверждено другими СМИ): " if corroborated else ""
+        needs_check.append(label + text)
+
+    card["confirmed"] = confirmed
+    card["needs_check"] = needs_check
+    card["sources"] = sources[:3]
+    if data["hook"]:
+        card["hook"] = clean_text(data["hook"])
+    if data["what_happened"]:
+        card["what_happened"] = clean_text(data["what_happened"])
+    card["status"] = _verification_status(card)
+    return card

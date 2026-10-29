@@ -354,3 +354,104 @@ def test_get_or_build_scout_card_caches():
     second = scout.get_or_build_scout_card(topic, None)
     assert second is first
     assert first["published"] == topic["article"]["published"]
+
+
+# --- fact_check_scout_card ---
+
+
+_FC_RAW = ('{"verdicts": ['
+           '{"n": 1, "verdict": "ok", "text": "Robot собрал кубик Рубика", "query": "robot rubiks cube"}, '
+           '{"n": 2, "verdict": "uncertain", "text": "Видео от 28.10", "query": "robot rubiks video"}], '
+           '"hook": "", "what_happened": "Команда X показала робота, собравшего кубик."}')
+
+_FC_ALL_OK = ('{"verdicts": ['
+              '{"n": 1, "verdict": "ok", "text": "Robot собрал кубик Рубика", "query": "robot rubiks cube"}, '
+              '{"n": 2, "verdict": "ok", "text": "Видео от 28.10", "query": "robot rubiks video"}], '
+              '"hook": "", "what_happened": ""}')
+
+
+def _checked_card():
+    import scout
+    card = scout.build_scout_card(_card_topic(), _fake_client(_CARD_RAW))
+    article = {"title": "Robot solves cube", "url": "https://a.example/1",
+               "source": "arXiv cs.RO", "published": None,
+               "_full_text": "Robot собрал кубик Рубика."}
+    return card, article
+
+
+def test_fact_check_scout_card_splits_verdicts_and_rewrites():
+    import scout
+    card, article = _checked_card()
+    original_hook = card["hook"]
+    with patch.object(news_pipeline, "fetch_google_news", return_value=[]):
+        checked = scout.fact_check_scout_card(card, article, _fake_client(_FC_RAW))
+
+    assert checked["confirmed"] == ["Robot собрал кубик Рубика"]
+    assert len(checked["needs_check"]) == 1
+    assert "Видео от 28.10" in checked["needs_check"][0]
+    assert "собравшего кубик" in checked["what_happened"]
+    assert checked["hook"] == original_hook  # пусто в ответе — не тронут
+
+
+def test_fact_check_scout_card_without_client():
+    import scout
+    card, article = _checked_card()
+    original_what = card["what_happened"]
+    checked = scout.fact_check_scout_card(card, article, None)
+
+    assert checked["confirmed"] == []
+    assert checked["needs_check"] == card["claims"]
+    assert checked["what_happened"] == original_what
+    assert checked["status"] == "требует проверки"
+
+
+def test_fact_check_scout_card_wrong_claim_dropped():
+    import scout
+    card, article = _checked_card()
+    raw = '{"verdicts": [{"n": 1, "verdict": "wrong", "text": "", "query": ""}], ' \
+          '"hook": "", "what_happened": "Подтверждённая версия из одного факта."}'
+    checked = scout.fact_check_scout_card(card, article, _fake_client(raw))
+
+    assert "cubик" not in str(checked["confirmed"])
+    assert checked["confirmed"] == []
+    assert checked["needs_check"] == []
+    assert "Подтверждённая версия" in checked["what_happened"]
+
+
+def test_fact_check_scout_card_corroboration_and_sources():
+    import scout
+    card, article = _checked_card()
+    others = [{"title": "Robot собрал кубик - РБК", "url": "https://news.example/s1"},
+              {"title": "Robot собрал кубик - Хабр", "url": "https://news.example/s2"},
+              {"title": "тот же url - РБК", "url": article["url"]}]
+    with patch.object(news_pipeline, "fetch_google_news", return_value=others):
+        checked = scout.fact_check_scout_card(card, article, _fake_client(_FC_RAW))
+
+    assert checked["needs_check"][0].startswith("✓ (подтверждено другими СМИ)")
+    urls = [s["url"] for s in checked["sources"]]
+    assert article["url"] not in urls  # свой источник не попадает в доп. источники
+    assert len(urls) == 2
+
+
+def test_verification_status_labels():
+    import scout
+    card, article = _checked_card()
+    # все ok → подтверждено
+    with patch.object(news_pipeline, "fetch_google_news", return_value=[]):
+        checked = scout.fact_check_scout_card(dict(card), article,
+                                              _fake_client(_FC_ALL_OK))
+    assert checked["status"] == "подтверждено"
+
+    # ok + uncertain с корроборацией → частично подтверждено
+    others = [{"title": "Robot кубик - РБК", "url": "https://news.example/s1"},
+              {"title": "Robot кубик - Хабр", "url": "https://news.example/s2"}]
+    with patch.object(news_pipeline, "fetch_google_news", return_value=others):
+        checked = scout.fact_check_scout_card(dict(card), article,
+                                              _fake_client(_FC_RAW))
+    assert checked["status"] == "частично подтверждено"
+
+    # uncertain без корроборации → требует проверки
+    with patch.object(news_pipeline, "fetch_google_news", return_value=[]):
+        checked = scout.fact_check_scout_card(dict(card), article,
+                                              _fake_client(_FC_RAW))
+    assert checked["status"] == "требует проверки"
