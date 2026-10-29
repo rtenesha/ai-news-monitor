@@ -30,7 +30,13 @@ SCOUT_FEEDS = [
     {"name": "TechCrunch AI", "url": "https://techcrunch.com/category/artificial-intelligence/feed/"},
     {"name": "IEEE Spectrum AI", "url": "https://spectrum.ieee.org/feeds/topic/artificial-intelligence.rss"},
     {"name": "MIT Technology Review AI", "url": "https://www.technologyreview.com/topic/artificial-intelligence/feed"},
-    {"name": "arXiv cs.RO", "url": "https://export.arxiv.org/rss/cs.RO"},
+    {"name": "arXiv cs.RO",
+     # RSS-обёртки arXiv (export/rss.arxiv.org rss) отдавали stub с 0 записей —
+     # проверено вживую 2026-10-29. Официальное Atom API работает и содержит даты.
+     "url": "https://export.arxiv.org/api/query?search_query=cat:cs.RO"
+            "&sortBy=submittedDate&sortOrder=descending&max_results=15",
+     # arXiv публикует с лагом: свежие статьи старше 48ч — окно не уже 96ч
+     "min_hours": 96},
 ]
 
 SCOUT_CATEGORIES = {"А": "Роботы и эксперименты",
@@ -91,7 +97,8 @@ def collect_scout_topics(hours: int = DEFAULT_HOURS) -> list[dict]:
     cap by combined keyword score. Never raises (each fetcher is safe)."""
     articles: list[dict] = []
     for feed in SCOUT_FEEDS + editorial.EDITORIAL_FEEDS:
-        posts, _ok = news_pipeline.fetch_rss_feed(feed["name"], feed["url"], hours)
+        feed_hours = max(hours, feed.get("min_hours", 0))
+        posts, _ok = news_pipeline.fetch_rss_feed(feed["name"], feed["url"], feed_hours)
         articles += posts
     articles += fetch_hf_papers()
     articles += news_pipeline.fetch_hackernews(hours=hours)
@@ -540,3 +547,15 @@ def render_scout_card_messages(topic: dict, card: dict) -> list[str]:
         f"Оценка: {html.escape(card.get('score_why', ''))}" if card.get("score_why") else "",
     ]))
     return editorial._split_by_paragraphs(text)
+
+
+def resolve_scout_command(args: list[str], n_topics: int) -> dict:
+    """Parse /scout arguments: a number 1..n_topics with a non-empty stored
+    list means card N; anything else (no arg, garbage, empty list) means a
+    time window in hours, clamped to 2..168."""
+    n = editorial.parse_int_arg(list(args or []))
+    if n is None:
+        return {"mode": "hours", "value": DEFAULT_HOURS}
+    if 1 <= n <= n_topics:
+        return {"mode": "card", "n": n}
+    return {"mode": "hours", "value": min(max(n, 2), 168)}

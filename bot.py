@@ -23,6 +23,7 @@ from notifier import score_article, generate_post, _NATURAL_TEXT_RULES
 import news_pipeline
 import editorial
 import tools_digest
+import scout
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -340,7 +341,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/list7 — быстрый список за неделю по каждому источнику отдельно (заголовок + ссылка, без ИИ)\n"
         "/reddit — интересные ветки из AI-сабреддитов, заголовок + короткое описание\n\n"
         "Редакторские карточки:\n"
-        "/digest — темы для карточек по редакторской инструкции, /card N — полная карточка темы\n\n"
+        "/digest — темы для карточек по редакторской инструкции, /card N — полная карточка темы\n"
+        "/scout — необычные ИИ-истории по инструкции скаута, /scout N — карточка истории\n\n"
         "Понравилась новость из обзора — скопируй её ссылку и вызови /post <ссылка>, "
         "получишь готовый пост.\n\n"
         "Из ссылки — сразу пост:\n"
@@ -634,6 +636,47 @@ async def cmd_tools(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                                             disable_web_page_preview=True)
 
 
+async def cmd_scout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    cmd = scout.resolve_scout_command(list(context.args),
+                                      len(context.bot_data.get("scout_topics", [])))
+    if cmd["mode"] == "card":
+        topics = context.bot_data.get("scout_topics", [])
+        topic = editorial.resolve_topic(topics, cmd["n"])
+        # resolve_topic не сработает только при гонке между resolve_scout_command
+        # и перестройкой списка; для надёжности отвечаем на месте
+        if topic is None:
+            await update.message.reply_text("Нет такой темы. Сначала /scout, потом /scout 1 …")
+            return
+        status = await update.message.reply_text("Строю карточку скаута: полный текст, факты…")
+        card = scout.get_or_build_scout_card(topic, _groq_client())
+        seen = set(context.bot_data.get("scout_seen", ()))
+        seen.add(news_pipeline.normalize_url(topic["article"]["url"]))
+        context.bot_data["scout_seen"] = seen
+        await status.delete()
+        for msg in scout.render_scout_card_messages(topic, card):
+            try:
+                await update.message.reply_html(msg, disable_web_page_preview=True)
+            except Exception:
+                # фолбэк на plain-text: Telegram не принял HTML (например, лимит)
+                plain = html.unescape(re.sub(r"<[^>]+>", "", msg))
+                await update.message.reply_text(plain[:4096],
+                                                disable_web_page_preview=True)
+        return
+
+    hours = cmd["value"]
+    status = await update.message.reply_text(
+        f"Ищу необычное за {hours} ч… пара минут: сбор + полный текст + скоринг")
+    client = _groq_client()
+    topics, used_ai = scout.select_scout_topics(scout.collect_scout_topics(hours), client)
+    seen = set(context.bot_data.get("scout_seen", ()))
+    fresh = editorial.filter_unseen(topics, seen)
+    # нумерация /scout N должна совпадать с отрисовкой — храним отфильтрованный список
+    context.bot_data["scout_topics"] = fresh
+    context.bot_data["scout_seen"] = seen
+    await status.edit_text(scout.render_scout_list(fresh, hours, used_ai),
+                           parse_mode="HTML", disable_web_page_preview=True)
+
+
 async def cmd_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     topics = context.bot_data.get("editorial_topics", [])
     n = editorial.parse_int_arg(context.args)
@@ -669,6 +712,7 @@ async def post_init(app: Application) -> None:
     await app.bot.set_my_commands([
         BotCommand("digest",   "🗂 Темы для карточек по редакторской инструкции"),
         BotCommand("card",     "📄 Полная карточка темы: /card 1"),
+        BotCommand("scout",    "🔎 Необычные ИИ-истории: /scout | /scout 3"),
         BotCommand("tools",    "🧰 Дайджест бесплатных инструментов: /tools"),
         BotCommand("news2",   "🔥 Горячее за последние 2 часа (кратко)"),
         BotCommand("news24",  "📰 Лучшее за сутки (кратко)"),
@@ -698,6 +742,7 @@ def main() -> None:
     app.add_handler(CommandHandler("reply", cmd_reply))
     app.add_handler(CommandHandler("digest", cmd_digest))
     app.add_handler(CommandHandler("card", cmd_card))
+    app.add_handler(CommandHandler("scout", cmd_scout))
     app.add_handler(CommandHandler("tools", cmd_tools))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_plain_text))
 

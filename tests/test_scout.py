@@ -22,6 +22,29 @@ def editorial_feeds():
 # --- collect_scout_topics ---
 
 
+def test_collect_scout_topics_widens_arxiv_window():
+    """arXiv публикует с лагом: даже свежие статьи старше 48ч, поэтому
+    его фид должен запрашиваться с окном не уже 96ч независимо от hours."""
+    import scout
+    calls = []
+
+    def fake_rss(name, url, hours):
+        calls.append((name, hours))
+        return ([], True)
+
+    with patch.object(news_pipeline, "fetch_rss_feed", side_effect=fake_rss), \
+         patch.object(news_pipeline, "fetch_hackernews", return_value=[]), \
+         patch.object(news_pipeline, "fetch_github_trending", return_value=[]), \
+         patch.object(news_pipeline, "fetch_hf_trending", return_value=[]), \
+         patch.object(news_pipeline, "fetch_reddit", return_value=[]), \
+         patch.object(news_pipeline, "fetch_producthunt", return_value=[]), \
+         patch.object(scout, "fetch_hf_papers", return_value=[]):
+        scout.collect_scout_topics(hours=24)
+
+    arxiv = dict(calls).get("arXiv cs.RO")
+    assert arxiv is not None and arxiv >= 96
+
+
 def test_collect_scout_topics_merges_all_sources_dedups_and_caps():
     import scout
     all_feeds = scout.SCOUT_FEEDS + editorial_feeds()
