@@ -139,6 +139,10 @@ def score_article_ai(article: dict, groq_client, full_text: Optional[str] = None
 
 _BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 
+# Groq free-tier TPM упал до ~8000: батарея скоринговых вызовов подряд даёт
+# шторм 429. Между AI-вызовами выдерживается эта пауза (сек).
+AI_SCORE_PAUSE = 4.0
+
 
 def _extract_from_html(html: str) -> Optional[str]:
     try:

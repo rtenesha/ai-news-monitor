@@ -439,3 +439,37 @@ def test_split_hard_breaks_single_paragraph_over_limit():
     chunks = editorial._split_by_paragraphs("х" * 5000)
     assert all(len(c) <= 4000 for c in chunks)
     assert "".join(chunks) == "х" * 5000
+
+
+def test_select_topics_pauses_between_ai_calls(monkeypatch):
+    """Groq free-tier TPM ~8000: small pause between per-article score calls."""
+    import time as time_mod
+
+    import editorial
+
+    arts = [{"title": f"t{i}", "url": f"https://x/{i}", "summary": "s",
+             "source": "S", "published": None} for i in range(3)]
+    ok = {"criteria": {}, "total": 10, "rubric": "Новое в ИИ",
+          "post_format": "А", "one_liner": "ок"}
+    monkeypatch.setattr(editorial, "score_topic_ai",
+                        lambda a, c, full_text=None: dict(ok))
+    monkeypatch.setattr(editorial.news_pipeline, "extract_full_text", lambda url: "")
+    sleeps = []
+    monkeypatch.setattr(time_mod, "sleep", lambda s: sleeps.append(s))
+
+    topics, used_ai = editorial.select_topics(arts, object())
+
+    assert used_ai
+    assert len(sleeps) == 2  # между вызовами, не после последнего
+
+
+def test_render_topic_list_hints_when_few_topics():
+    import editorial
+
+    few = [dict(_topic()) for _ in range(2)]
+    out = editorial.render_topic_list(few, 24, True)
+    assert "шире" in out
+
+    four = [dict(_topic()) for _ in range(4)]
+    out4 = editorial.render_topic_list(four, 24, True)
+    assert "шире" not in out4

@@ -8,6 +8,7 @@ from __future__ import annotations
 import html
 import json
 import re
+import time
 from datetime import datetime, timezone
 
 import news_pipeline
@@ -180,12 +181,15 @@ def select_topics(articles: list[dict], groq_client=None) -> tuple[list[dict], b
     keyword totals marked ai=False, top TOPIC_LIST_MAX with total >= FALLBACK_TOTAL."""
     used_ai = bool(groq_client)
     topics = []
-    for article in articles:
+    for idx, article in enumerate(articles):
         full_text = None
         if groq_client:
             full_text = news_pipeline.extract_full_text(article["url"])
             article["_full_text"] = full_text
         result = score_topic_ai(article, groq_client, full_text=full_text)
+        # разнести вызовы по времени при жёстком TPM-лимите Groq
+        if groq_client and idx < len(articles) - 1:
+            time.sleep(news_pipeline.AI_SCORE_PAUSE)
         if result:
             topic = {"article": article, **result, "ai": True}
         else:
@@ -488,6 +492,9 @@ def render_topic_list(topics, hours: int, used_ai: bool) -> str:
         if url:
             lines.append(f'   🔗 <a href="{html.escape(url, quote=True)}">'
                          f'{html.escape(url)}</a>')
+        lines.append("")
+    if len(topics) < 3:
+        lines.append("Тем маловато в этом окне — попробуй шире: /digest 48 или /digest 72")
         lines.append("")
     lines.append("Полная карточка: /card 1 … /card %d" % len(topics))
     return "\n".join(lines)

@@ -725,12 +725,7 @@ async def post_init(app: Application) -> None:
     ])
 
 
-def main() -> None:
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    if not token:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN не задан в .env")
-
-    app = Application.builder().token(token).post_init(post_init).build()
+def _register_handlers(app: Application) -> None:
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("news2", cmd_news2))
     app.add_handler(CommandHandler("news24", cmd_news24))
@@ -739,12 +734,33 @@ def main() -> None:
     app.add_handler(CommandHandler("reddit", cmd_reddit))
     app.add_handler(CommandHandler("post", cmd_post))
     app.add_handler(CommandHandler("rewrite", cmd_rewrite))
-    app.add_handler(CommandHandler("reply", cmd_reply))
     app.add_handler(CommandHandler("digest", cmd_digest))
     app.add_handler(CommandHandler("card", cmd_card))
     app.add_handler(CommandHandler("scout", cmd_scout))
     app.add_handler(CommandHandler("tools", cmd_tools))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_plain_text))
+    # без этого падение хендлера молчит («No error handlers are registered»),
+    # а пользователь не получает ответа и считает, что бот умер
+    app.add_error_handler(_on_error)
+
+
+async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    logging.getLogger("bot").exception("Ошибка хендлера: %s", context.error)
+    try:
+        upd = update if isinstance(update, Update) else None
+        if upd and upd.effective_message:
+            await upd.effective_message.reply_text(f"Ошибка бота: {context.error}")
+    except Exception:
+        logging.getLogger("bot").exception("Не удалось сообщить об ошибке в чат")
+
+
+def main() -> None:
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not token:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN не задан в .env")
+
+    app = Application.builder().token(token).post_init(post_init).build()
+    _register_handlers(app)
 
     logging.info("Бот запущен, жду команды…")
     app.run_polling(drop_pending_updates=True)
