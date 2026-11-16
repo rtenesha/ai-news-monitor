@@ -9,6 +9,7 @@ from __future__ import annotations
 import html
 import json as _json
 import re
+import time
 import urllib.request
 
 import editorial
@@ -227,12 +228,15 @@ def select_scout_topics(articles: list[dict], groq_client=None) -> tuple[list[di
     keyword totals marked ai=False, top SCOUT_LIST_MAX with total >= FALLBACK_TOTAL."""
     used_ai = bool(groq_client)
     topics = []
-    for article in articles:
+    for idx, article in enumerate(articles):
         full_text = None
         if groq_client:
             full_text = news_pipeline.extract_full_text(article["url"])
             article["_full_text"] = full_text
         result = score_scout_topic_ai(article, groq_client, full_text=full_text)
+        # разнести вызовы по времени при жёстком TPM-лимите Groq
+        if groq_client and idx < len(articles) - 1:
+            time.sleep(news_pipeline.AI_SCORE_PAUSE)
         if result:
             topic = {"article": article, **result, "ai": True}
         else:

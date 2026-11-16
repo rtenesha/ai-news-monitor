@@ -59,6 +59,7 @@ KEYWORDS = [
     "агент", "agent", "workflow",
     "OpenAI", "Anthropic", "Siri", "Apple Intelligence", "Google AI",
     "Microsoft AI", "Llama", "Mistral", "Grok", "xAI",
+    "Qwen", "DeepSeek",
     "WWDC", "GPT-4", "GPT-5", "Copilot", "neural network",
     "вайбкодинг", "vibe coding", "vibecoding",
     "skill", "скил", "скилы", "agent skills",
@@ -70,6 +71,7 @@ KEYWORDS = [
 HIGH_VALUE = {"chatgpt", "claude", "gpt", "llm", "gemini", "midjourney",
               "no-code", "nocode", "нейросеть", "нейросети", "автоматизация", "agent",
               "openai", "anthropic", "llama", "mistral", "grok", "sora", "copilot",
+              "qwen", "deepseek",
               "вайбкодинг", "vibe coding", "vibecoding",
               "skill", "скил", "скилы", "agent skills",
               "prompt", "промпт", "промты",
@@ -88,7 +90,9 @@ def fetch_recent(hours: int = 1) -> list[dict]:
 
 
 def _kw_matches(kw: str, text: str) -> bool:
-    return bool(re.search(r'\b' + re.escape(kw.lower()) + r'\b', text))
+    # после ключевого слова допустима цифра («Qwen4-Max»): \b обрывался на
+    # букво-цифровой границе и «qwen» не совпадал с «qwen4»
+    return bool(re.search(r'\b' + re.escape(kw.lower()) + r'(?![^\W\d_])', text))
 
 
 def score_article(article: dict) -> int:

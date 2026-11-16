@@ -365,3 +365,57 @@ def test_render_tools_post_kept_uncertain_reworded():
     post = tools_digest.render_tools_post(result)
     assert "недостаточно" in post
     assert "покажу только их" not in post
+
+class _FakeResp:
+    def __init__(self, content):
+        from unittest.mock import MagicMock
+        msg = MagicMock()
+        msg.content = content
+        self.choices = [MagicMock(message=msg)]
+
+
+def test_select_tools_splits_big_batches(monkeypatch):
+    """Groq free-tier TPM 8000: 20 candidates in one call overflows the limit
+    (413 Request too large,_requested 10461 TPM) → split into small chunks."""
+    import json as _json
+    import time as time_mod
+    from types import SimpleNamespace
+
+    import tools_digest
+
+    cands = [{"title": f"Tool{i}", "url": f"https://x/{i}",
+              "summary": "cli утилита", "source": "S", "published": None,
+              "_official": {"readme": "r" * 9000, "license": "MIT"}}
+             for i in range(20)]
+    returned = [
+        [{"name": f"T{i}", "url": f"https://x/{i}", "verdict": "ok"}
+         for i in range(0, 8)],
+        [{"name": f"T{i}", "url": f"https://x/{i}", "verdict": "ok"}
+         for i in range(8, 16)],
+        [{"name": f"T{i}", "url": f"https://x/{i}", "verdict": "ok"}
+         for i in range(16, 20)],
+    ]
+
+    client = SimpleNamespace()
+    calls = []
+
+    def fake_create(**kw):
+        calls.append(kw)
+        return _FakeResp(_json.dumps({"items": returned[len(calls) - 1]}))
+
+    client.chat = SimpleNamespace(completions=SimpleNamespace(create=fake_create))
+    sleeps = []
+    monkeypatch.setattr(time_mod, "sleep", lambda s: sleeps.append(s))
+
+    result = tools_digest.select_tools(cands, client)
+
+    assert len(calls) == 3          # 20 канд. / 8 на батч → 3 вызова
+    for kw in calls:
+        prompt = kw["messages"][1]["content"]
+        assert prompt.count("имя:") <= tools_digest._AI_BATCH
+    assert result["mode"] == "ai"
+    assert len(result["items"]) <= 5
+    urls = {it["url"] for it in result["items"]}
+    assert any("x/0" in u for u in urls)
+    assert all(u in {c["url"] for c in cands} for u in urls)  # provenance: только кандидаты
+    assert len(sleeps) == 2         # пауза только между батчами

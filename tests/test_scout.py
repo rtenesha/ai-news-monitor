@@ -543,3 +543,26 @@ def test_render_scout_card_dateless():
     card["published"] = None
     msgs = scout.render_scout_card_messages({"category": "А"}, card)
     assert "трендинг на момент сбора" in "\n".join(msgs)
+
+
+def test_select_scout_topics_pauses_between_ai_calls(monkeypatch):
+    """Groq free-tier TPM ~8000: burst of ~20 scoring calls back-to-back
+    triggers 429 storms → tiny pause between per-article calls."""
+    import time as time_mod
+
+    import scout
+
+    arts = [{"title": f"t{i}", "url": f"https://x/{i}", "summary": "s",
+             "source": "S", "published": None} for i in range(3)]
+    ok = {"criteria": {}, "total": 10, "category": "Инструменты",
+          "one_liner": "ок"}
+    monkeypatch.setattr(scout, "score_scout_topic_ai",
+                        lambda a, c, full_text=None: dict(ok))
+    monkeypatch.setattr(scout.news_pipeline, "extract_full_text", lambda url: "")
+    sleeps = []
+    monkeypatch.setattr(time_mod, "sleep", lambda s: sleeps.append(s))
+
+    topics, used_ai = scout.select_scout_topics(arts, object())
+
+    assert used_ai
+    assert len(sleeps) == 2  # между вызовами, не после последнего

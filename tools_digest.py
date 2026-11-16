@@ -4,6 +4,7 @@ from __future__ import annotations
 import html
 import json as _json
 import re
+import time
 import urllib.request
 from typing import Optional
 
@@ -148,39 +149,35 @@ verdict=ok — данные подтверждены текстом первои
 {cands}"""
 
 
+# Groq free-tier TPM ~8000: 20 кандидатов одним запросом = 10461 токен →
+# гарантированный 413 Request too large. Кандидаты уходят порциями.
+_AI_BATCH = 8
+
+
 def select_tools(candidates: list[dict], client=None) -> dict:
-    """One Groq call: score candidates against the editor instructions,
-    return up to 5 diverse items with verdicts. No AI → fallback list."""
+    """Groq score candidates against the editor instructions in small batches
+    (single-call payload overflows the free-tier 8000 TPM limit), return up to
+    5 diverse items with verdicts. No AI → fallback list."""
     if not client or not candidates:
         return _fallback_tools(candidates)
-    cand_lines = []
-    for c in candidates:
-        off = c.get("_official") or {}
-        text = off.get("readme") or off.get("text") or c["summary"] or ""
-        cand_lines.append(
-            f"- имя: {c['title']}\n  url: {c['url']}\n  источник: {c['source']}\n"
-            f"  официальный текст: {text[:_MAX_TEXT]}\n"
-            f"  github: readme={'да' if off.get('readme') else 'нет'}, "
-            f"license={off.get('license')}, last_release={off.get('last_release')}")
-    prompt = _TOOLS_PROMPT.format(n=len(candidates), cands="\n".join(cand_lines))
-    try:
-        response = client.chat.completions.create(
-            model="openai/gpt-oss-120b", reasoning_effort="low",
-            messages=[
-                {"role": "system", "content": _TOOLS_SYSTEM_RULES},
-                {"role": "user", "content": prompt},
-            ], temperature=0.2)
-        raw = response.choices[0].message.content
-        parsed = _parse_tools_json(raw)
-    except Exception as e:
-        print(f"Tools AI error: {e}")
-        parsed = None
-    if parsed and parsed.get("items"):
+    parsed_items: list[dict] = []
+    base: Optional[dict] = None  # title/notes первого удачного вызова
+    for i in range(0, len(candidates), _AI_BATCH):
+        chunk = candidates[i:i + _AI_BATCH]
+        if i:
+            time.sleep(news_pipeline.AI_SCORE_PAUSE)
+        parsed = _score_batch(chunk, client)
+        if parsed:
+            if base is None:
+                base = {k: v for k, v in parsed.items() if k != "items"}
+            parsed_items += parsed.get("items") or []
+    if parsed_items:
         # provenance check: ссылка должна указывать на одного из кандидатов —
         # выдуманный url от модели считается wrong и выбрасывается кодом
         cand_norm = {normalize_url(c["url"]) for c in candidates if c.get("url")}
-        items, rejected = [], []
-        for it in parsed["items"]:
+        rejected = []
+        items = []
+        for it in parsed_items:
             if it.get("verdict") == "wrong":
                 if it.get("url"):
                     rejected.append(it["url"])
@@ -195,11 +192,37 @@ def select_tools(candidates: list[dict], client=None) -> dict:
         if items:
             # wrong-пункты выброшены из поста, но их url запоминаем — чтобы
             # get_or_build_tools исключил их из следующих прогонов.
-            parsed["rejected"] = rejected
-            parsed["items"] = items
-            parsed["mode"] = "ai"
-            return parsed
+            base = dict(base or {})
+            base["items"] = items
+            base["rejected"] = rejected
+            base["mode"] = "ai"
+            return base
     return _fallback_tools(candidates)
+
+
+def _score_batch(chunk: list[dict], client) -> Optional[dict]:
+    """One Groq call for a chunk of candidates. Returns parsed JSON or None."""
+    cand_lines = []
+    for c in chunk:
+        off = c.get("_official") or {}
+        text = off.get("readme") or off.get("text") or c["summary"] or ""
+        cand_lines.append(
+            f"- имя: {c['title']}\n  url: {c['url']}\n  источник: {c['source']}\n"
+            f"  официальный текст: {text[:_MAX_TEXT]}\n"
+            f"  github: readme={'да' if off.get('readme') else 'нет'}, "
+            f"license={off.get('license')}, last_release={off.get('last_release')}")
+    prompt = _TOOLS_PROMPT.format(n=len(chunk), cands="\n".join(cand_lines))
+    try:
+        response = client.chat.completions.create(
+            model="openai/gpt-oss-120b", reasoning_effort="low",
+            messages=[
+                {"role": "system", "content": _TOOLS_SYSTEM_RULES},
+                {"role": "user", "content": prompt},
+            ], temperature=0.2)
+        return _parse_tools_json(response.choices[0].message.content)
+    except Exception as e:
+        print(f"Tools AI error: {e}")
+        return None
 
 
 def _parse_tools_json(raw: str) -> Optional[dict]:
